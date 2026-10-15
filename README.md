@@ -4,10 +4,11 @@
 [![React](https://img.shields.io/badge/React-19.3-61DAFB?logo=react&logoColor=black)](https://react.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![Vite](https://img.shields.io/badge/Vite-8.3-646CFF?logo=vite&logoColor=white)](https://vitejs.dev)
-[![Supabase](https://img.shields.io/badge/Supabase-PostgreSQL-3ECF8E?logo=supabase&logoColor=white)](https://supabase.com)
+[![Engine](https://img.shields.io/badge/Database-Autonomous%20JSON%20Engine-cyan.svg)](src/client/local-storage-db.ts)
+[![Supabase](https://img.shields.io/badge/Cloud%20Sync-Supabase%20(Optional)-3ECF8E?logo=supabase&logoColor=white)](https://supabase.com)
 [![Tests](https://img.shields.io/badge/Tests-20%2F20%20Passing-brightgreen.svg)](src/tests/system.test.ts)
 
-> **RationSafe Autonomous Public Distribution System (PDS) Web Administration Dashboard and Node.js REST API**, engineered for mission-critical grain rationing, cryptographic offline-first reconciliation, and real-time Supabase ledger synchronization.
+> **RationSafe Autonomous Public Distribution System (PDS) Web Administration Dashboard and Node.js REST API**, engineered for mission-critical grain rationing, cryptographic offline-first reconciliation, autonomous persistent client-side JSON ledger storage, and optional real-time Supabase cloud synchronization.
 
 ---
 
@@ -132,10 +133,11 @@ Distribution nodes operate autonomously in remote environments with zero interne
 | Layer | Technology |
 |---|---|
 | **Frontend Framework** | React 19, TypeScript, Vite |
+| **Primary Data Engine** | Autonomous Client-Side JSON Database Engine (`localStorage` + Edge Cache, zero setup) |
+| **Cloud Synchronization** | Supabase (PostgreSQL 15), Supabase Realtime, Row-Level Security (Optional) |
 | **Styling & UI** | Cyber-Glassmorphism Dark Theme (`#0A0E17`, `#0F172A`), Vanilla CSS, Lucide Icons |
 | **Backend API Server** | Node.js, Express 5, TypeScript (`tsx`) |
 | **Cryptography** | `@noble/ed25519`, TweetNaCl, SHA-256 privacy hashing |
-| **Database & Realtime**| Supabase (PostgreSQL 15), Supabase Realtime, Row-Level Security (RLS) |
 | **Testing** | Standalone TypeScript system test suite (20 comprehensive scenarios) |
 
 ---

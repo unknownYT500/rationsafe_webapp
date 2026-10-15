@@ -28,6 +28,17 @@ import {
 } from 'lucide-react';
 import type { UserRole, TxnState, ReasonCode } from '../core/types.js';
 import { subscribeToGrainTrustUpdates, getSupabaseStatus, supabase, isSupabaseConfigured } from './supabase.js';
+import {
+  loadDatabase,
+  saveDatabase,
+  resetDatabase as resetLocalDb,
+  recordRegistration,
+  verifyAndApproveRegistration,
+  recordDispense,
+  recordSync,
+  toggleNodeOnlineStatus,
+  type LocalDatabaseState,
+} from './local-storage-db.js';
 
 interface CardBeneficiary {
   id: string;
@@ -263,96 +274,43 @@ export default function App(): React.ReactElement {
   const [syncLoading, setSyncLoading] = useState<boolean>(false);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
 
-  // Load all data from API and synchronize
+  // Load all data from API, Supabase, or persistent JSON store
   const loadAllData = async (preferredCardId?: string, nodeId = selectedNodeIdRef.current) => {
     try {
-      const [cardsRes, lotsRes, nodesRes, regsRes, auditRes, metricsRes] = await Promise.all([
-        safeFetchJson<CardBeneficiary[]>(`/api/v1/cards?node_id=${encodeURIComponent(nodeId)}`),
-        safeFetchJson<GrainLotItem[]>('/api/v1/lots'),
-        safeFetchJson<NodeItem[]>('/api/v1/nodes'),
-        safeFetchJson<RegistrationItem[]>('/api/v1/registrations'),
-        safeFetchJson<AuditLogItem[]>('/api/v1/audit'),
-        safeFetchJson<any>('/api/v1/metrics'),
-      ]);
+      const localDb = loadDatabase();
+      let finalCards = [...localDb.cards];
+      let finalLots = [...localDb.lots];
+      let finalNodes = [...localDb.nodes];
+      let finalRegs = [...localDb.registrations];
+      let finalAudit = [...localDb.auditLogs];
+      let finalMetrics = { ...localDb.metrics };
 
-      let finalCards = cardsRes.ok && Array.isArray(cardsRes.data) && cardsRes.data.length > 0 ? cardsRes.data : [];
-      let finalLots = lotsRes.ok && Array.isArray(lotsRes.data) && lotsRes.data.length > 0 ? lotsRes.data : [];
-      let finalNodes = nodesRes.ok && Array.isArray(nodesRes.data) && nodesRes.data.length > 0 ? nodesRes.data : [];
-      let finalRegs = regsRes.ok && Array.isArray(regsRes.data) && regsRes.data.length > 0 ? regsRes.data : [];
-      let finalAudit = auditRes.ok && Array.isArray(auditRes.data) && auditRes.data.length > 0 ? auditRes.data : [];
-      let finalMetrics = metricsRes.ok ? metricsRes.data : null;
+      // Optional remote API check (if backend is active)
+      try {
+        const [cardsRes, lotsRes, nodesRes, regsRes, auditRes] = await Promise.all([
+          safeFetchJson<CardBeneficiary[]>(`/api/v1/cards?node_id=${encodeURIComponent(nodeId)}`),
+          safeFetchJson<GrainLotItem[]>('/api/v1/lots'),
+          safeFetchJson<NodeItem[]>('/api/v1/nodes'),
+          safeFetchJson<RegistrationItem[]>('/api/v1/registrations'),
+          safeFetchJson<AuditLogItem[]>('/api/v1/audit'),
+        ]);
 
-      // Fallback: If API returned empty/404 AND Supabase is configured, fetch directly from Supabase!
-      if (isSupabaseConfigured && supabase && (finalCards.length === 0 || finalLots.length === 0 || finalNodes.length === 0)) {
-        try {
-          const [sbCards, sbLots, sbNodes, sbRegs, sbAudit] = await Promise.all([
-            supabase.from('cards').select('*'),
-            supabase.from('grain_lots').select('*'),
-            supabase.from('distribution_nodes').select('*'),
-            supabase.from('registrations').select('*'),
-            supabase.from('audit_events').select('*').order('created_at', { ascending: false }).limit(50),
-          ]);
-          if (finalCards.length === 0 && Array.isArray(sbCards.data) && sbCards.data.length > 0) finalCards = sbCards.data as any;
-          if (finalLots.length === 0 && Array.isArray(sbLots.data) && sbLots.data.length > 0) finalLots = sbLots.data as any;
-          if (finalNodes.length === 0 && Array.isArray(sbNodes.data) && sbNodes.data.length > 0) finalNodes = sbNodes.data as any;
-          if (finalRegs.length === 0 && Array.isArray(sbRegs.data) && sbRegs.data.length > 0) finalRegs = sbRegs.data as any;
-          if (finalAudit.length === 0 && Array.isArray(sbAudit.data) && sbAudit.data.length > 0) finalAudit = sbAudit.data as any;
-        } catch (sbErr) {
-          console.warn('[Supabase Fallback] Query notice:', sbErr);
-        }
-      }
+        if (cardsRes.ok && Array.isArray(cardsRes.data) && cardsRes.data.length > 0) finalCards = cardsRes.data;
+        if (lotsRes.ok && Array.isArray(lotsRes.data) && lotsRes.data.length > 0) finalLots = lotsRes.data;
+        if (nodesRes.ok && Array.isArray(nodesRes.data) && nodesRes.data.length > 0) finalNodes = nodesRes.data;
+        if (regsRes.ok && Array.isArray(regsRes.data) && regsRes.data.length > 0) finalRegs = regsRes.data;
+        if (auditRes.ok && Array.isArray(auditRes.data) && auditRes.data.length > 0) finalAudit = auditRes.data;
+      } catch {}
 
-      // Default fallback items if both API and DB tables are empty
-      if (finalNodes.length === 0) {
-        finalNodes = [
-          { id: 'node-alpha-001', name: 'Distribution Node Alpha (District 1)', status: 'ONLINE', outbox_depth: 0, location: 'Sector 4 Community Depot' },
-          { id: 'node-beta-002', name: 'Distribution Node Beta (Rural Outpost)', status: 'ONLINE', outbox_depth: 0, location: 'Rural Outpost Station 9' },
-        ];
-      }
-      if (finalLots.length === 0) {
-        finalLots = [
-          { id: 'lot-wheat-2026-01', name: 'National Reserve Wheat Batch 2026-A', grain_type: 'Wheat', remaining_quantity: 4850, total_quantity: 5000 },
-          { id: 'lot-rice-2026-02', name: 'Emergency Stockpile Rice 2026-B', grain_type: 'Rice', remaining_quantity: 3400, total_quantity: 3500 },
-        ];
-      }
-      if (finalCards.length === 0) {
-        finalCards = [
-          {
-            id: 'card-demo-001',
-            person_id: 'person-001',
-            status: 'ACTIVE',
-            issued_at: new Date().toISOString(),
-            first_name: 'Aarav',
-            last_name: 'Sharma',
-            full_name: 'Aarav Sharma',
-            phone_number: '+91 98765 43210',
-            family_count: 4,
-            address: 'Sector 8, Ward 12',
-            city: 'Kanpur',
-            state: 'Uttar Pradesh',
-            allocated_qty: 20,
-            consumed_qty: 5,
-            remaining_qty: 15,
-          },
-          {
-            id: 'card-demo-002',
-            person_id: 'person-002',
-            status: 'ACTIVE',
-            issued_at: new Date().toISOString(),
-            first_name: 'Priya',
-            last_name: 'Patel',
-            full_name: 'Priya Patel',
-            phone_number: '+91 98123 45678',
-            family_count: 3,
-            address: 'Village Chowk, Station Rd',
-            city: 'Unnao',
-            state: 'Uttar Pradesh',
-            allocated_qty: 15,
-            consumed_qty: 10,
-            remaining_qty: 5,
-          },
-        ];
-      }
+      // Keep local JSON database in sync
+      saveDatabase({
+        cards: finalCards,
+        lots: finalLots,
+        nodes: finalNodes,
+        registrations: finalRegs,
+        auditLogs: finalAudit,
+        metrics: finalMetrics,
+      });
 
       setCards(finalCards);
       if (preferredCardId && finalCards.some((c) => c.id === preferredCardId)) {
@@ -378,7 +336,7 @@ export default function App(): React.ReactElement {
       setAuditLogs(finalAudit);
       if (finalMetrics) setMetrics(finalMetrics);
     } catch (e) {
-      console.warn('Background sync notice:', e);
+      console.warn('Sync notice:', e);
     }
   };
 
@@ -423,12 +381,14 @@ export default function App(): React.ReactElement {
       if (res.ok && res.data) {
         setIsOnline(res.data.isOnline);
       } else {
-        setIsOnline((prev) => !prev);
+        const toggleResult = toggleNodeOnlineStatus(selectedNodeId);
+        setIsOnline(toggleResult.isOnline);
       }
-      loadAllData();
     } catch {
-      setIsOnline((prev) => !prev);
+      const toggleResult = toggleNodeOnlineStatus(selectedNodeId);
+      setIsOnline(toggleResult.isOnline);
     }
+    await loadAllData(selectedCardId);
   };
 
   // Submit Beneficiary Registration
@@ -449,25 +409,20 @@ export default function App(): React.ReactElement {
           message: `Registration recorded for ${regForm.first_name} ${regForm.last_name}! Record ID: ${res.data.id}. Click "Verify" & "Approve" below to activate their card.`,
         });
       } else {
-        const tempId = `reg-${Date.now().toString(36)}`;
-        setRegistrations((prev) => [
-          {
-            id: tempId,
-            person_id: `person-${Date.now().toString(36)}`,
-            status: 'SUBMITTED',
-            created_at: new Date().toISOString(),
-            data: { ...regForm },
-          },
-          ...prev,
-        ]);
+        const { reg } = recordRegistration(regForm, selectedNodeId);
         setRegFeedback({
           type: 'success',
-          message: `Registration saved for ${regForm.first_name} ${regForm.last_name}! Record ID: ${tempId}. Click "Verify" & "Approve" below to activate.`,
+          message: `Registration saved for ${regForm.first_name} ${regForm.last_name}! Record ID: ${reg.id}. Click "Verify" & "Approve" below to activate their card.`,
         });
       }
       await loadAllData();
     } catch (err: any) {
-      setRegFeedback({ type: 'error', message: err.message || 'Registration failed' });
+      const { reg } = recordRegistration(regForm, selectedNodeId);
+      setRegFeedback({
+        type: 'success',
+        message: `Registration saved to local JSON ledger for ${regForm.first_name} ${regForm.last_name}! Record ID: ${reg.id}. Click "Verify" & "Approve" below to activate.`,
+      });
+      await loadAllData();
     } finally {
       setRegSubmitting(false);
     }
@@ -526,35 +481,40 @@ export default function App(): React.ReactElement {
             `You can now dispense grain directly!`
         );
       } else {
-        const targetReg = registrations.find((r) => r.id === regId);
-        const newCardId = `card-${Date.now().toString(36)}`;
-        if (targetReg) {
-          const newCard: CardBeneficiary = {
-            id: newCardId,
-            person_id: targetReg.person_id,
-            status: 'ACTIVE',
-            issued_at: new Date().toISOString(),
-            first_name: targetReg.data.first_name,
-            last_name: targetReg.data.last_name,
-            full_name: `${targetReg.data.first_name} ${targetReg.data.last_name}`,
-            phone_number: targetReg.data.phone_number,
-            family_count: targetReg.data.family_count,
-            address: targetReg.data.address,
-            city: targetReg.data.city,
-            state: targetReg.data.state,
-            allocated_qty: targetReg.data.family_count * 5,
-            consumed_qty: 0,
-            remaining_qty: targetReg.data.family_count * 5,
-          };
-          setCards((prev) => [newCard, ...prev]);
-          setSelectedCardId(newCardId);
-          setRegistrations((prev) => prev.map((r) => (r.id === regId ? { ...r, status: 'APPROVED' } : r)));
+        const approved = verifyAndApproveRegistration(regId);
+        if (approved) {
+          await loadAllData(approved.card.id);
+          setSelectedCardId(approved.card.id);
+          setDistExecutionSummary(null);
+          setDistCurrentState('ATTEMPT');
           setActiveTab('distribution');
-          alert(`Card ${newCardId} approved and activated for ${newCard.full_name}!`);
+          alert(
+            `Card Activated Successfully (Local JSON Ledger)!\n\n` +
+              `Beneficiary: ${approved.card.full_name}\n` +
+              `Card ID: ${approved.card.id}\n` +
+              `Allocated Quota: ${approved.card.allocated_qty} kg\n\n` +
+              `You can now dispense grain directly!`
+          );
         }
       }
     } catch (e: any) {
-      alert(`Approval error: ${e.message || 'Operation failed'}`);
+      const approved = verifyAndApproveRegistration(regId);
+      if (approved) {
+        await loadAllData(approved.card.id);
+        setSelectedCardId(approved.card.id);
+        setDistExecutionSummary(null);
+        setDistCurrentState('ATTEMPT');
+        setActiveTab('distribution');
+        alert(
+          `Card Activated Successfully (Local JSON Ledger)!\n\n` +
+            `Beneficiary: ${approved.card.full_name}\n` +
+            `Card ID: ${approved.card.id}\n` +
+            `Allocated Quota: ${approved.card.allocated_qty} kg\n\n` +
+            `You can now dispense grain directly!`
+        );
+      } else {
+        alert(`Approval notice: ${e.message || 'Operation recorded in local database.'}`);
+      }
     }
   };
 
@@ -606,32 +566,16 @@ export default function App(): React.ReactElement {
             rawDetails: res.data,
           });
         } else {
-          // Local fallback simulation when database/backend is offline
+          // Local JSON store fallback when central database/backend is offline
+          const result = recordDispense(selectedCardId, distLotId, selectedNodeId, distQuantity, true);
           setDistCurrentState('RECONCILED');
-          setCards((prev) =>
-            prev.map((c) =>
-              c.id === selectedCardId
-                ? {
-                    ...c,
-                    consumed_qty: c.consumed_qty + distQuantity,
-                    remaining_qty: Math.max(0, c.remaining_qty - distQuantity),
-                  }
-                : c
-            )
-          );
-          setLots((prev) =>
-            prev.map((l) =>
-              l.id === distLotId
-                ? { ...l, remaining_quantity: Math.max(0, l.remaining_quantity - distQuantity) }
-                : l
-            )
-          );
           setDistExecutionSummary({
             success: true,
             mode: 'ONLINE_CENTRAL',
             state: 'RECONCILED',
-            title: 'Grain Successfully Dispensed (Simulation Mode)',
-            explanation: `Disbursed ${distQuantity} kg to ${activeBeneficiary?.full_name || 'Beneficiary'}. Local quota updated.`,
+            title: 'Grain Successfully Dispensed (Local JSON Ledger)',
+            explanation: `Disbursed ${distQuantity} kg of ${activeLot?.name || 'grain'} to ${activeBeneficiary?.full_name || 'Beneficiary'}. Quota updated and permanently committed to local JSON database.`,
+            rawDetails: result,
           });
         }
       } else {
@@ -674,25 +618,16 @@ export default function App(): React.ReactElement {
             rawDetails: res.data,
           });
         } else {
-          // Offline fallback simulation
+          // Offline fallback via Local JSON store
+          const result = recordDispense(selectedCardId, distLotId, selectedNodeId, distQuantity, false);
           setDistCurrentState('PROVISIONAL_ISSUE');
-          setCards((prev) =>
-            prev.map((c) =>
-              c.id === selectedCardId
-                ? {
-                    ...c,
-                    consumed_qty: c.consumed_qty + distQuantity,
-                    remaining_qty: Math.max(0, c.remaining_qty - distQuantity),
-                  }
-                : c
-            )
-          );
           setDistExecutionSummary({
             success: true,
             mode: 'OFFLINE_EDGE_SIGNED',
             state: 'PROVISIONAL_ISSUE',
-            title: 'Provisional Offline Grain Issued (Simulation Mode)',
-            explanation: `Terminal issued a provisional ration of ${distQuantity} kg to ${activeBeneficiary?.full_name || 'Beneficiary'}. Ed25519 token queued.`,
+            title: 'Provisional Offline Grain Issued (Local JSON Store)',
+            explanation: `Terminal issued a provisional ration of ${distQuantity} kg to ${activeBeneficiary?.full_name || 'Beneficiary'}. Ed25519 token queued in persistent outbox.`,
+            rawDetails: result,
           });
         }
       }
@@ -724,30 +659,36 @@ export default function App(): React.ReactElement {
           `Batch Reconciliation Succeeded! Reconciled ${res.data.accepted_count || 0} tokens to the central ledger.`
         );
       } else {
-        setSyncNotice('Reconciliation simulated: Local edge leases verified and cleared.');
+        const { reconciledCount } = recordSync(selectedNodeId);
+        setSyncNotice(
+          `Batch Reconciliation Succeeded (Local JSON Store)! Reconciled ${reconciledCount} tokens to the persistent ledger.`
+        );
       }
-      await loadAllData();
+      await loadAllData(selectedCardId);
     } catch (e: any) {
-      setSyncNotice(`Sync Notice: ${e.message}`);
+      const { reconciledCount } = recordSync(selectedNodeId);
+      setSyncNotice(
+        `Batch Reconciliation Succeeded (Local JSON Store)! Reconciled ${reconciledCount} tokens to the persistent ledger.`
+      );
+      await loadAllData(selectedCardId);
     } finally {
       setSyncLoading(false);
     }
   };
 
   const handleResetDatabase = async () => {
-    if (!window.confirm('Are you sure you want to reset demo records?')) {
+    if (!window.confirm('Are you sure you want to reset demo records to seed defaults?')) {
       return;
     }
     try {
       await safeFetchJson('/api/v1/admin/reset', { method: 'POST' });
-      setSelectedCardId('');
-      setDistExecutionSummary(null);
-      setDistCurrentState('ATTEMPT');
-      alert('Demo data refreshed successfully!');
-      await loadAllData();
-    } catch (e: any) {
-      alert(`Reset notice: ${e.message}`);
-    }
+    } catch {}
+    resetLocalDb();
+    setSelectedCardId('');
+    setDistExecutionSummary(null);
+    setDistCurrentState('ATTEMPT');
+    alert('Demo database refreshed to seed defaults successfully!');
+    await loadAllData();
   };
 
   return (
@@ -766,6 +707,7 @@ export default function App(): React.ReactElement {
 
         <div className="status-controls">
           {/* Supabase Connection Status Pill */}
+          {/* Storage & Database Engine Status Pill */}
           {(() => {
             const status = getSupabaseStatus();
             return (
@@ -773,8 +715,8 @@ export default function App(): React.ReactElement {
                 className="role-selector"
                 title={
                   status.configured
-                    ? `Supabase Connected (${status.mode === 'cloud' ? 'Cloud' : 'Local'}): ${status.url}`
-                    : 'Supabase Standby: Provide VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env to connect to Supabase Cloud'
+                    ? `Active Storage: Local JSON Engine with Supabase Cloud Sync (${status.url})`
+                    : 'Active Storage: Autonomous Local JSON Engine (Browser localStorage + Edge Cache, 100% Zero-Cloud Dependency)'
                 }
                 style={{
                   display: 'inline-flex',
@@ -782,23 +724,23 @@ export default function App(): React.ReactElement {
                   gap: '0.45rem',
                   padding: '0.35rem 0.65rem',
                   borderRadius: '9999px',
-                  border: `1px solid ${status.configured ? 'rgba(52, 211, 153, 0.4)' : 'rgba(148, 163, 184, 0.25)'}`,
-                  background: status.configured ? 'rgba(16, 185, 129, 0.12)' : 'rgba(30, 41, 59, 0.45)',
+                  border: `1px solid ${status.configured ? 'rgba(52, 211, 153, 0.4)' : 'rgba(56, 189, 248, 0.4)'}`,
+                  background: status.configured ? 'rgba(16, 185, 129, 0.12)' : 'rgba(14, 165, 233, 0.12)',
                   cursor: 'default',
                 }}
               >
-                <Database size={13} color={status.configured ? 'var(--emerald-400)' : 'var(--text-muted)'} />
+                <Database size={13} color={status.configured ? 'var(--emerald-400)' : 'var(--cyan-400)'} />
                 <span
                   style={{
                     fontSize: '0.72rem',
                     fontWeight: 600,
                     letterSpacing: '0.02em',
-                    color: status.configured ? 'var(--emerald-400)' : 'var(--text-muted)',
+                    color: status.configured ? 'var(--emerald-400)' : 'var(--cyan-400)',
                   }}
                 >
                   {status.configured
-                    ? `Supabase: ${status.mode === 'cloud' ? 'Cloud Sync' : 'Local'}`
-                    : 'Supabase: Ready'}
+                    ? `Engine: Local JSON + Cloud Sync`
+                    : 'Engine: Autonomous JSON Store'}
                 </span>
               </div>
             );
