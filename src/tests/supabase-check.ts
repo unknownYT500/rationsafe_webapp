@@ -25,8 +25,9 @@ console.log('====================================================\n');
 const isPlaceholder = (val: string) =>
   !val ||
   val.includes('your-project-ref') ||
-  val.includes('dummy_anon_key') ||
-  val.includes('your_anon_jwt_token_here');
+  val.includes('dummy') ||
+  val.includes('your_anon') ||
+  val.includes('your-anon');
 
 if (isPlaceholder(supabaseUrl) || isPlaceholder(supabaseAnonKey)) {
   console.log('⚠️  SUPABASE NOT CONFIGURED IN web/.env\n');
@@ -56,8 +57,13 @@ async function verifyConnection() {
 
     if (nodeError) {
       console.error('❌ Error querying distribution_nodes:', nodeError.message);
-      if (nodeError.code === '42P01') {
-        console.log('\n💡 Tables not found! Please run web/supabase/migrations/20261014000000_graintrust_schema.sql in the Supabase SQL Editor.');
+      if (nodeError.code === '42P01' || nodeError.message.includes('schema cache') || nodeError.message.includes('Could not find')) {
+        console.log('\n💡 Tables not yet created in Supabase!');
+        console.log('   To create them:');
+        console.log('   1. In Supabase Dashboard, open SQL Editor -> New query');
+        console.log('   2. Paste and run: web/supabase/migrations/20261014000000_graintrust_schema.sql');
+        console.log('   3. Paste and run: web/supabase/seed.sql');
+        console.log('   4. Re-run: npm run test:supabase\n');
       }
       process.exit(1);
     }

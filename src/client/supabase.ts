@@ -8,7 +8,8 @@ export const isSupabaseConfigured = Boolean(
   supabaseUrl && 
   supabaseAnonKey &&
   !supabaseAnonKey.includes('dummy') &&
-  !supabaseAnonKey.includes('your_anon_jwt_token_here') &&
+  !supabaseAnonKey.includes('your_anon') &&
+  !supabaseAnonKey.includes('your-anon') &&
   !supabaseUrl.includes('your-project-ref')
 );
 

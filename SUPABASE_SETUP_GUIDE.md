@@ -26,8 +26,8 @@ You can use either **Supabase Cloud** (recommended) or a **Local Supabase Instan
 5. In your project dashboard, navigate to **Project Settings** (gear icon) $\to$ **API**.
 6. Copy the following credentials:
    - **Project URL**: `https://<your-project-ref>.supabase.co`
-   - **Project API Keys** $\to$ `anon` / `public`: `eyJhbGciOiJIUzI1NiIsInR5cCI6...`
-   - **Project API Keys** $\to$ `service_role` (optional for backend scripts): `eyJhbGciOiJIUzI1Ni...`
+   - **Project API Keys** $\to$ `anon` / `public`: `<your-anon-public-key>`
+   - **Project API Keys** $\to$ `service_role` (optional for backend scripts): `<your-service-role-secret-key>`
 
 ### Option B: Local Supabase Instance (Docker)
 If developing locally without an internet connection:
@@ -82,8 +82,8 @@ Open `.env` and fill in your Supabase credentials:
 ```env
 # Supabase Cloud Configuration
 VITE_SUPABASE_URL=https://<your-project-ref>.supabase.co
-VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.<your-anon-token>
-SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.<your-service-role-token>
+VITE_SUPABASE_ANON_KEY=<your-anon-token>
+SUPABASE_SERVICE_ROLE_KEY=<your-service-role-token>
 
 # Node API Server Settings
 PORT=3001
@@ -124,7 +124,7 @@ cd mobile
 
 flutter run \
   --dart-define=SUPABASE_URL=https://<your-project-ref>.supabase.co \
-  --dart-define=SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.<your-anon-token>
+  --dart-define=SUPABASE_ANON_KEY=<your-anon-token>
 ```
 
 ### Method 2: Update Default Values in Code
@@ -138,7 +138,7 @@ class AppEnv {
 
   static const String supabaseAnonKey = String.fromEnvironment(
     'SUPABASE_ANON_KEY',
-    defaultValue: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.<your-anon-token>',
+    defaultValue: '<your-anon-token>',
   );
   ...
 }
