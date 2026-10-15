@@ -19,7 +19,26 @@ export function createServer(customDb?: CentralDatabase) {
   app.use(cors());
   app.use(express.json());
 
-  const dbPath = path.join(__dirname, '../../data/central_db.json');
+  // Support both /api/v1/... and /v1/... when running behind serverless rewrites
+  app.use((req, _res, next) => {
+    if (!req.url.startsWith('/api') && req.url.startsWith('/v1')) {
+      req.url = '/api' + req.url;
+    }
+    next();
+  });
+
+  const isVercel = Boolean(process.env.VERCEL);
+  const dbPath = isVercel
+    ? path.join('/tmp', 'central_db.json')
+    : path.join(__dirname, '../../data/central_db.json');
+  const baseNodesDir = isVercel
+    ? path.join('/tmp', 'nodes')
+    : path.join(__dirname, '../../data/nodes');
+
+  try {
+    fs.mkdirSync(baseNodesDir, { recursive: true });
+  } catch {}
+
   const db = customDb || new CentralDatabase(dbPath);
   const service = new CentralService(db);
 
@@ -46,7 +65,7 @@ export function createServer(customDb?: CentralDatabase) {
         nodeName: 'Distribution Node Alpha',
         privateKeyHex: keysA.privateKeyHex,
         publicKeyHex: keysA.publicKeyHex,
-        dataDir: path.join(__dirname, '../../data/nodes'),
+        dataDir: baseNodesDir,
       });
       edgeNodes.set(nodeAId, edgeA);
 
@@ -67,7 +86,7 @@ export function createServer(customDb?: CentralDatabase) {
         nodeName: 'Distribution Node Beta',
         privateKeyHex: keysB.privateKeyHex,
         publicKeyHex: keysB.publicKeyHex,
-        dataDir: path.join(__dirname, '../../data/nodes'),
+        dataDir: baseNodesDir,
       });
       edgeNodes.set(nodeBId, edgeB);
     } else {
@@ -80,7 +99,7 @@ export function createServer(customDb?: CentralDatabase) {
             nodeName: n.name,
             privateKeyHex: keys.privateKeyHex,
             publicKeyHex: n.public_key || keys.publicKeyHex,
-            dataDir: path.join(__dirname, '../../data/nodes'),
+            dataDir: baseNodesDir,
           });
           edgeNodes.set(n.id, edge);
         }
