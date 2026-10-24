@@ -1,0 +1,871 @@
+GRAINTRUST WEB APP - MOBILE AND SUPABASE ALIGNMENT GUIDE
+========================================================
+
+Purpose
+-------
+This document maps the current web application, its data and operational
+workflows, and a practical migration path for making web and mobile clients
+share one Supabase database. It is based on the checked-in source and the
+current local implementation. Where repository design documents describe a
+target that differs from the source code, the difference is called out.
+
+Treat the current source behavior as the compatibility baseline, not every
+claim in older design documents. In particular, the source currently uses
+JSON files, not MySQL or SQLite, and it does not connect to Supabase.
+
+
+1. CURRENT TECHNICAL FRAMEWORK
+------------------------------
+
+Web client:
+- React 19, TypeScript, Vite 8, lucide-react icons.
+- Entry point: src/client/main.tsx; main screen and all five tabs are in
+  src/client/App.tsx; visual styles are in src/client/index.css.
+- Vite serves the browser app on port 3000.
+- Vite forwards /api requests to http://localhost:3001 (vite.config.ts).
+- Browser data is held in React state and refreshed from the API every
+  five seconds. The client does not currently use browser local storage.
+
+API and business logic:
+- Node.js, TypeScript, Express 5, cors, Zod validation.
+- API entry point and routes: src/api/server.ts.
+- Business rules: src/services/central-service.ts.
+- State types: src/core/types.ts.
+- Transaction state transition rules: src/core/state-machine.ts.
+- UUIDv7 IDs and Ed25519/canonical JSON/SHA-256 helpers:
+  src/core/uuidv7.ts and src/core/crypto.ts.
+- Default API port is 3001; PORT can override it.
+
+Persistence in the current application:
+- Central data is loaded from and written to data/central_db.json by
+  src/database/storage.ts. It stores arrays/maps serialized as JSON, not
+  relational tables.
+- Per-node local state is written under data/nodes/node_<node-id>_state.json
+  by src/edge-node/edge-node.ts. It contains local quota leases, grants,
+  counter, provisional-token outbox and local transactions.
+- Edge runtime objects and their private keys are in the Express process.
+- @supabase/supabase-js is listed in package.json, but no source code imports
+  or initializes Supabase. Its presence does not mean data is in Supabase.
+- Older docs mention MySQL and SQLite as intended storage; they do not match
+  this implementation.
+
+Local development commands:
+- npm install
+- Terminal 1: npm run start:api
+- Terminal 2: npm run dev
+- npm run build
+- npm test
+
+
+2. APPLICATION FUNCTIONALITY (WEB UI)
+-------------------------------------
+
+Shared header and operator controls:
+- Shows GrainTrust identity.
+- Selects the active distribution node/terminal.
+- Simulates online/offline mode by toggling that node's edge runtime state.
+- Selects a displayed role: Distribution Operator, Registration Operator,
+  Field Supervisor, Auditor or Administrator.
+- The shared type system additionally defines Beneficiary,
+  Reconciliation Officer, Security Tester and System Operator; these are not
+  choices in the current UI.
+- Clear DB asks for browser confirmation and resets all central records and
+  stored node state through the API.
+- When offline, displays a warning about local signed leases and queued
+  tokens.
+- The active role selector is currently presentation state only. It is not
+  sent with most API requests and is not authentication/authorization.
+
+Tab 1 - Grain Dispense Desk:
+- Shows active terminal identity/location and online/offline mode.
+- Selects a beneficiary card; displays holder name, card status, phone,
+  household size, allocated/consumed/remaining quota and a progress gauge.
+- Shortcut to create a sample beneficiary and open registration.
+- Selects an inventory lot and requested quantity (UI default 5 kg, step
+  0.5 kg, client min 0.5 and max 100).
+- Checkbox requests the supervisor offline fallback override.
+- Online issue calls central transaction API. Success is immediately
+  reconciled; errors are rendered using human-readable diagnostics.
+- Offline issue calls the edge node, checks local grant/lease, signs a
+  provisional token and stores it in the node outbox. It is pending central
+  reconciliation until sync.
+- Shows the state stepper: ATTEMPT, FAIL_REASON, FALLBACK_AUTH,
+  PROVISIONAL_ISSUE, RECONCILED, plus operation report and remediation.
+- Refreshes cards and lots after issue.
+
+Tab 2 - Beneficiary Cards / Registration:
+- Enrollment fields: first name, last name, phone, date of birth, family
+  count, annual income, address, city, state and consent.
+- "Generate Sample Citizen" fills one of four hard-coded demo profiles.
+- Submits an application and shows success/error feedback.
+- Shows registrations filtered to the currently selected node, with citizen
+  contact/location, family count, implied quota, card ID, status and action.
+- "Approve & Issue Card" calls verify then approve, creates beneficiary and
+  card, selects that card and switches back to the dispense desk.
+- For approved registrations, "Dispense to Card" selects the card and opens
+  the dispense tab.
+
+Tab 3 - Edge Outbox & Sync:
+- Displays active terminal, pending outbox depth and connection state.
+- Shows all nodes, online/offline status, pending queue depth, location and
+  truncated Ed25519 public key.
+- "Trigger Batch Sync Now" is enabled only while the selected node is online.
+- Displays accepted and duplicate counts on successful reconciliation.
+
+Tab 4 - Grain Stockpile:
+- Read-only table of lot name, grain type, total quantity and remaining stock.
+- The UI has no lot-create or grant-allocation form.
+
+Tab 5 - Immutable Audit Log:
+- Displays up to the last 15 events in reverse order: local time, actor,
+  action, resource type and JSON details.
+
+Additional API-only functionality (not exposed as a regular UI screen):
+- Beneficiary/person lookup with role-shaped field projection.
+- Autofill of distribution receipt and application form template data.
+- List transactions and transaction state history.
+- Get admin quota data; create a card quota lease.
+- Create grain lot.
+- Direct node batch-sync route.
+- Health endpoint.
+
+
+3. DATA MODEL AND RELATIONSHIPS
+-------------------------------
+
+The current model is typed in src/core/types.ts. IDs are mostly UUIDv7
+strings; demo node/lot IDs are also fixed human-readable strings.
+
+Declared UserRole values:
+- BENEFICIARY
+- REGISTRATION_OPERATOR
+- DISTRIBUTION_OPERATOR
+- SUPERVISOR
+- ADMINISTRATOR
+- RECONCILIATION_OFFICER
+- AUDITOR
+- SECURITY_TESTER
+- SYSTEM_OPERATOR
+
+These are type-level labels only in the current app, not authenticated roles.
+
+Person:
+- id, first_name, last_name, phone_number, dob, created_at.
+- Phone number is checked for uniqueness only when the person is inserted
+  during approval; pending registrations are not deduplicated.
+
+Household profile:
+- id, person_id, family_count, yearly_income, address, city, state.
+- One household profile is created for an approved person.
+
+Registration:
+- id, status (DRAFT, SUBMITTED, VERIFIED, APPROVED), data payload,
+  optional node_id/person_id/card_id, created_at, updated_at.
+- data contains first_name, last_name, phone_number, dob, family_count,
+  yearly_income, address, city, state, consent_opt_in.
+
+Card:
+- id, person_id, status (ACTIVE, SUSPENDED, REVOKED), issued_at.
+- Approval creates an ACTIVE card.
+
+Grain lot:
+- id, name, grain_type, total_quantity, remaining_quantity (kg).
+
+Lot-cap grant:
+- id, lot_id, node_id, max_quantity, remaining_quantity, expires_at
+  (Unix seconds), signature.
+- Limits how much a specific node is permitted to issue for a lot.
+
+Card quota ledger / lease:
+- id, card_id, node_id, allocated_qty, consumed_qty, period_start.
+- Online central transaction spends a matching node lease or GLOBAL lease.
+- Offline edge also tracks a local copy for that card.
+
+Distribution transaction:
+- id, card_id, node_id, lot_id, quantity, state, idempotency_key,
+  optional failure_reason/fallback_reason, created_at, updated_at.
+
+Transaction state history:
+- id, txn_id, from_state, to_state, optional reason_code, actor_id,
+  timestamp. Intended as append-only transition history.
+
+Provisional token:
+- id, txn_id, payload, signature, key_id, nonce, counter, created_at.
+- Payload fields: v, tid, nid, lid, gid, qid, sub, n, c, qty, unit, iat,
+  exp, kid. "sub" is the SHA-256 hash of the card ID, not PII.
+
+Failure event:
+- event_id, txn_id, type (TXN_FAILURE, SYNC_FAILURE, CRYPTO_FAILURE), code,
+  node_id, timestamp, retryable, metadata.
+
+Audit event:
+- id, actor_id, action, resource_type, resource_id, details, timestamp.
+- API intent is append-only; do not permit update/delete in the mobile or
+  web client.
+
+Distribution node:
+- id, name, public_key, status (ONLINE, OFFLINE, SYNCING), last_heartbeat,
+  outbox_depth, location.
+
+Also persisted centrally:
+- Idempotency key -> cached status/body/timestamp.
+- Used nonce -> token_id/timestamp.
+
+Relationships for the shared relational schema:
+- persons 1:1 household_profiles; persons 1:0..1 cards.
+- registrations reference assigned node and, after approval, person/card.
+- cards 1:many quota_leases and transactions.
+- lots 1:many lot_cap_grants and transactions.
+- nodes 1:many grants, leases and transactions.
+- transactions 1:many state-history records and 0..1 or many signed tokens
+  (choose and enforce the intended cardinality during migration).
+- tokens/nonces must be unique against replay.
+
+Seed data currently created by API startup when central data is empty:
+- Node Alpha (Sector 4 Community Depot) and Node Beta (Rural Outpost
+  Station 9), each with a generated Ed25519 key pair.
+- Wheat lot: 5,000 kg total, 4,850 kg initially remaining.
+- Rice lot: 3,000 kg total, 2,950 kg initially remaining.
+- Seeded 500 kg wheat grant per node, expiring in seven days.
+- No rice grants are seeded.
+
+
+4. BUSINESS RULES AND WORKFLOWS
+-------------------------------
+
+4.1 Registration, verification and card approval
+
+1. Client submits POST /api/v1/registrations.
+2. Zod validation currently requires:
+   - First and last name: 1-50 chars.
+   - Phone: optional leading + then 10-15 digits.
+   - DOB string format YYYY-MM-DD.
+   - Family count integer 1-30.
+   - Annual income >= 0.
+   - Address 3-255 chars; city/state 2-100 chars.
+   - Consent must be true.
+3. A SUBMITTED registration with UUIDv7 and timestamps is stored and an
+   audit event REGISTRATION_SUBMITTED is added.
+4. POST /api/v1/registrations/:id/verify changes SUBMITTED to VERIFIED and
+   records REGISTRATION_VERIFIED.
+5. POST /api/v1/registrations/:id/approve accepts SUBMITTED or VERIFIED.
+   It creates person, household, ACTIVE card and monthly quota:
+   10 kg * family_count.
+6. Registration becomes APPROVED with person_id/card_id and an audit event
+   REGISTRATION_APPROVED.
+7. The UI then selects the new card and allows issue.
+
+Important current node assignment behavior:
+- Web sends node_id in registration JSON, but current API route does not pass
+  it to submitRegistration. CentralService assigns the first registered
+  node by default. The UI filters registrations by selected node, so a
+  registration submitted from another selected node may appear under a
+  different node.
+- Approval writes the central quota to the registration node, but current
+  API then allocates local quota on every in-memory edge node. This is a
+  known divergence, not an intended shared-database rule.
+- UI family count max is 20, API max is 30.
+- Quota is created with a period_start date, but no monthly renewal/reset job
+  is implemented in the current source.
+
+4.2 Online grain distribution
+
+1. UI posts card_id, lot_id, node_id and quantity to POST
+   /api/v1/transactions with Idempotency-Key and x-user-id headers.
+2. API rejects missing idempotency key and missing/falsy required fields.
+3. Service returns cached status/body for an already-used idempotency key.
+4. New attempt creates a transaction and INITIAL -> ATTEMPT history.
+5. Central store checks lot remaining quantity and matching node/GLOBAL card
+   lease; on success deducts both lot stock and card quota.
+6. Quota/lot rejection records FAIL_REASON, history and FailureEvent, then
+   returns HTTP 409 (ERR_201 for card quota; otherwise ERR_202).
+7. Success transitions ATTEMPT -> PROVISIONAL_ISSUE -> RECONCILED, stores
+   histories and transaction, caches HTTP 201 response.
+8. UI refreshes data and displays success/failure explanation.
+
+4.3 Offline edge issue and token creation
+
+1. UI posts card_id, lot_id, grant_id, quantity and allow_fallback to
+   POST /api/v1/edge-nodes/:id/issue.
+2. Edge checks its local active grant exists, is not expired and has capacity.
+3. Edge checks its local card quota lease.
+4. If quota is too low, it fails with ERR_201 unless allow_fallback is true;
+   fallback marks a supervisor override reason and permits issue, subject to
+   a valid grant.
+5. On issue, edge increments local grant use, local quota use (when a local
+   quota object exists) and monotonic counter.
+6. Edge constructs canonical JSON payload. It contains transaction/node/lot/
+   grant/quota references, hashed card subject, unique nonce, counter,
+   quantity in kg, issued-at and one-hour expiry timestamps, key ID.
+7. Edge signs payload with Ed25519 private key and appends token to local
+   outbox as PENDING; local transaction/outbox/counter are persisted.
+8. This is provisional, not centrally reconciled. UI reports that it awaits
+   sync.
+
+Canonical signature rules:
+- Recursively sort object keys; preserve array order; serialize as compact
+  JSON (src/core/crypto.ts canonicalJson).
+- UTF-8 bytes are signed/verified using Ed25519.
+- Signature and keys are hex.
+- Use the exact same canonicalization, numeric precision (quantity rounded to
+  two decimals), token field names and UTF-8 encoding on mobile.
+
+4.4 Offline batch synchronization and reconciliation
+
+1. Edge selects up to 100 PENDING outbox tokens and creates batch_id.
+2. UI "Trigger Batch Sync Now" invokes POST
+   /api/v1/edge-nodes/:id/sync-now. A direct central route also exists:
+   POST /api/v1/nodes/:id/sync.
+3. Central logic processes each token and returns per-token outcome:
+   ACCEPTED, REJECTED, DUPLICATE, CONFLICT or MANUAL_REVIEW.
+4. Duplicate nonce/reconciled transaction is acknowledged as DUPLICATE.
+5. Central verifies signature using the registered node public key.
+6. Central rejects expired tokens (ERR_402) and missing lot references
+   (CONFLICT/ERR_401).
+7. Accepted tokens create/update central transaction to RECONCILED, add
+   state history, store token, mark nonce used.
+8. Central updates node heartbeat/status/outbox depth and emits a
+   BATCH_SYNC_PROCESSED audit event.
+9. Edge marks ACCEPTED and DUPLICATE outbox items synced and removes synced
+   entries from its active outbox. REJECTED/CONFLICT are marked FAILED and
+   retained locally.
+
+4.5 Person lookup and autofill
+
+- GET /api/v1/persons/:id accepts x-user-role and x-user-id headers.
+- BENEFICIARY projection: ID, names, masked phone, card ID/status,
+  available quota.
+- DISTRIBUTION_OPERATOR and REGISTRATION_OPERATOR projection: full name,
+  phone, DOB, family count, city/state, card, quota values; yearly income is
+  the literal RESTRICTED_ACCESS.
+- Other role values receive full person/household/card/quota-ledger shape.
+- Lookup records PERSON_LOOKUP audit event.
+- POST /api/v1/persons/:id/autofill accepts template:
+  DISTRIBUTION_RECEIPT or APPLICATION_FORM.
+- The UI currently does not invoke these endpoints.
+
+4.6 State machine
+
+Allowed transitions in src/core/state-machine.ts:
+- INITIAL -> ATTEMPT
+- ATTEMPT -> FAIL_REASON or PROVISIONAL_ISSUE
+- FAIL_REASON -> FALLBACK_AUTH
+- FALLBACK_AUTH -> PROVISIONAL_ISSUE
+- PROVISIONAL_ISSUE -> RECONCILED
+- RECONCILED is terminal.
+
+ERR_201 card quota exhausted; ERR_202 lot/grant exhausted; ERR_301 invalid
+signature; ERR_302 replayed nonce; ERR_401 central rejection; ERR_402 expired
+token; ERR_403 lease exceeded; ERR_404 missing resource; ERR_409 invalid
+transition/conflict; ERR_500 internal error. Not every code is currently
+emitted by every path.
+
+
+5. CURRENT API CONTRACT (SOURCE ROUTES)
+---------------------------------------
+
+All routes are served by Express; browser calls use same-origin /api through
+the Vite proxy. Success and error shapes below are the shapes visible in the
+current route/service implementation.
+
+GET /api/health
+- Returns { status: "UP", timestamp }.
+
+GET /
+- Returns API status/message object.
+
+POST /api/v1/registrations
+- JSON body is RegistrationPayload; UI also sends node_id, but current route
+  ignores it.
+- x-user-id optional; default public-user.
+- Returns 201 RegistrationRecord; validation errors return 400 with code
+  ERR_101 and message.
+
+GET /api/v1/registrations
+- Returns all RegistrationRecord objects.
+
+POST /api/v1/registrations/:id/verify
+- x-user-id optional; default operator.
+- Returns changed registration; errors return 400 ERR_401.
+
+POST /api/v1/registrations/:id/approve
+- x-user-id optional; default admin.
+- Returns { registration, person, card }; errors return 400 ERR_401.
+
+GET /api/v1/cards
+- Returns cards joined to person/household and first available quota ledger:
+  id, person_id, status, issued_at, first_name, last_name, full_name,
+  phone_number, family_count, address, city, state, allocated_qty,
+  consumed_qty, remaining_qty.
+- UI passes node_id query parameter, but current route does not filter on it.
+
+GET /api/v1/persons/:id
+- Role-shaped person/card/household/quota projection described above.
+- x-user-role default DISTRIBUTION_OPERATOR; x-user-id default staff-user.
+- Missing person returns 404 ERR_404.
+
+POST /api/v1/persons/:id/autofill
+- Body { template }; defaults to DISTRIBUTION_RECEIPT.
+- Returns template data; errors return 404 ERR_404.
+
+POST /api/v1/transactions
+- Requires Idempotency-Key header.
+- JSON fields card_id, lot_id, node_id, quantity.
+- x-user-id default distribution-operator.
+- Returns service response with HTTP 201 on success or 409 on quota/lot
+  rejection; missing key/fields return 400 ERR_101.
+
+GET /api/v1/transactions
+- Returns all distribution transactions.
+
+GET /api/v1/transactions/:id/history
+- Returns state-history rows for the transaction.
+
+POST /api/v1/nodes/:id/sync
+- Body SyncBatchRequest { batch_id, tokens }.
+- Returns SyncBatchResponse counts and per-item acknowledgements.
+- Errors return HTTP 400 ERR_401.
+
+GET /api/v1/edge-nodes/:id/status
+- Returns nodeId, counter, outboxDepth, isOnline.
+
+POST /api/v1/edge-nodes/:id/issue
+- Body card_id, lot_id, optional grant_id, quantity, allow_fallback.
+- Optional Idempotency-Key; route generates one if absent.
+- Returns transaction, optional signed token, state; edge rejection returns
+  HTTP 409.
+
+POST /api/v1/edge-nodes/:id/sync-now
+- Generates batch from local edge outbox; empty queue returns message and
+  synced: 0. Otherwise returns central batch ACK response.
+
+POST /api/v1/edge-nodes/:id/toggle-online
+- Toggles node runtime isOnline and persisted central status; returns
+  { isOnline }.
+
+GET /api/v1/admin/quotas
+- Returns { lots, grants, quotas, cards }.
+
+POST /api/v1/admin/leases
+- Body card_id, node_id, quantity; sets/replaces central lease and allocates
+  local lease if that edge is running.
+- Returns success/message.
+
+GET /api/v1/nodes
+- Returns all distribution nodes.
+
+GET /api/v1/lots
+- Returns all grain lots.
+
+POST /api/v1/lots
+- Body name, grain_type, total_quantity; creates lot with equal remaining
+  quantity; returns HTTP 201 lot.
+
+GET /api/v1/metrics
+- Returns totalAttempts, failureEventsCount, failureRate, fallbackCount,
+  fallbackRate, syncBacklog, alertStatus and failureBreakdown.
+- Current formulas: failureRate = failure events / transaction count;
+  fallbackCount = transactions whose final state is FALLBACK_AUTH;
+  fallbackRate = fallbackCount / transactions whose final state is FAIL_REASON;
+  syncBacklog = sum of node outbox_depth; invalidSigAlert when ERR_301 is
+  over 5 percent of all failure events; backlogAlert when backlog exceeds
+  10,000. Rates are rounded to four decimals. These formulas have known
+  semantic limitations described in section 6.
+
+GET /api/v1/audit
+- Returns all audit events.
+
+POST /api/v1/admin/reset
+- Destructive: clears all central records and files in data/nodes, resets
+  edge runtimes, and seeds demo nodes/lots again.
+- Must be admin-authorized and environment-protected before production.
+
+
+6. IMPORTANT IMPLEMENTATION GAPS TO RESOLVE BEFORE PARITY
+---------------------------------------------------------
+
+These observations are based on current source and should be treated as
+migration checks, not promises about desired product behavior:
+
+- The current backend persistence is single-process JSON file storage; it is
+  not safe for concurrent API instances and does not provide a real
+  multi-device shared database.
+- Supabase is not initialized or used anywhere in src.
+- The API accepts arbitrary x-user-id/x-user-role headers; there is no
+  authentication middleware enforcing identities or roles. The role selector
+  in the UI is not access control. Replace this before exposing sensitive PII.
+- CORS is unrestricted in the current Express app.
+- Current registration route ignores submitted node_id. Cards query accepts
+  node_id in the UI but returns all cards. UI registration list applies its
+  own node filter. Fix assignment/filter semantics deliberately during API
+  contract migration.
+- The API approval route currently adds local quota to every edge runtime,
+  while central quota is associated with a node. Decide whether quotas are
+  node-scoped or globally shared and enforce the same invariant centrally,
+  locally and in mobile.
+- Edge private keys are generated at startup and not securely persisted. On
+  process restart, current rehydration can produce a new private key while
+  retaining a prior public key. Real offline signing needs durable per-node
+  keys stored securely and public-key rotation/registration rules.
+- "Offline" in the web demo is a simulated node mode. The browser still sends
+  HTTP to the local Express process. It is not a browser disconnected from
+  every server. Mobile offline operation needs native local database and
+  local signing capability.
+- Central reconciliation currently checks duplicate, signature, expiry and
+  lot existence, but does not fully validate card identity, grant capacity,
+  quota lease, token node/lot/grant references, counter sequence or reconcile
+  central lot/card consumption for offline tokens.
+- Reconciliation constructs card_id from token qid by removing "quota_";
+  edge currently places only a short card-ID prefix there. This is not a safe
+  card reference. Keep card ID out of the signed token if privacy requires;
+  instead bind token to an opaque quota lease ID and resolve it server-side.
+- Batch sync descriptions in reconciliation.md mention SQLite/MySQL and
+  quota refunds/counter checks that are not implemented in current source.
+- Online path writes transaction state history, but does not explicitly log
+  a transaction audit event. The online API currently trusts actor header.
+- Offline fallback moves transaction to PROVISIONAL_ISSUE before persistence;
+  fallback_reason can be present, but FALLBACK_AUTH is not the final stored
+  state. Metrics count current transaction state and therefore may not
+  capture actual fallback use.
+- Online transaction failure maps a missing card quota ledger to ERR_202
+  because all non-card-quota deduction failures take the lot-cap branch.
+- The UI fetches metrics but does not currently render the metric object.
+- GET person/autofill, transaction/history, admin quota/lease and lot-create
+  APIs are not wired to corresponding full UI screens.
+- No standard recurring monthly quota reset/renewal is implemented.
+- API schema accepts family_count up to 30 but web input allows up to 20.
+- Node seeding and edge runtime initialization are asynchronous; startup
+  readiness should be explicit before serving operations.
+- Quantity validation should reject NaN, zero, negative, excessive precision,
+  and unsupported units on the trusted server/database operation.
+- The UI's periodic loader converts individual fetch failures into empty
+  arrays/null, so network failure can look like a legitimate empty list.
+  Shared clients should retain last-known data and show freshness/connectivity
+  separately instead of silently replacing it with empty results.
+- Audit immutability in a class method is insufficient for Supabase. Enforce
+  append-only behavior with database grants/RLS and trusted server-side writes.
+
+Do not copy current bugs into the mobile client as parity requirements. Agree
+and document the intended behavior first, then update both clients together.
+
+Current test suite coverage (src/tests/system.test.ts):
+1. UUIDv7 uniqueness and validity for 1,000 generated IDs.
+2. Role-based field masking for operator, beneficiary and administrator.
+3. Reject illegal transition from RECONCILED back to ATTEMPT.
+4. Modified signed-token payload fails Ed25519 verification.
+5. Repeated idempotency key returns cached result without double deduction.
+6. Edge counter persists and resumes after node restart.
+7. Quota race: 50 concurrent requests for 10 units yield exactly 10 successes.
+8. Independent node offline leases reconcile without collision.
+9. Issue beyond lot grant cap fails with ERR_202.
+10. Offline outbox survives outage and replays after reconnect.
+11. Repeated sync batch is safely acknowledged as duplicate.
+12. Batch reconciliation can resume idempotently.
+13. Rejections create structured failure events.
+14. Registered operational node is available.
+15. Snapshot backup/restore preserves exact state.
+16. Backend lookup projection masks sensitive fields.
+17. Multi-node quota leases sum to the intended card entitlement.
+18. Audit event mutation is rejected.
+19. Expired token fails with ERR_402.
+20. Fallback authorization allows the expected fallback path.
+
+
+7. TARGET SHARED SUPABASE ARCHITECTURE
+--------------------------------------
+
+Recommended source of truth:
+- Supabase PostgreSQL stores central persons, registrations, cards, lots,
+  quota/grant ledgers, transactions, token receipts, failures, audit events
+  and node registry.
+- Web and mobile authenticate against the same Supabase project and use the
+  same stable API contract and role/tenant rules.
+- Trusted mutations (approve registration, issue online grain, quota
+  allocation, reconciliation, reset) run in a backend service or carefully
+  scoped Postgres RPC/Edge Function. They must be atomic transactions.
+- Clients never receive the Supabase service-role key. A mobile/web anon
+  publishable key is not a secret; every exposed table still requires correct
+  RLS. Keep any signing private key out of web bundles and ordinary database
+  rows.
+- Use Supabase Realtime for changes where useful, with a fetch/resync path
+  after reconnect. Realtime is an update channel, not the system of record
+  and not a replacement for idempotent writes.
+- Each mobile distribution terminal also has a local durable database and
+  outbox for offline actions. The central Supabase DB cannot be reached while
+  disconnected.
+
+Suggested PostgreSQL tables (map existing types, add constraints and indexes):
+1. profiles: auth user ID, display metadata, approved role/organization.
+2. persons: personal fields, unique normalized phone if policy confirms.
+3. household_profiles: person_id unique FK, family_count, income/address.
+4. registrations: status, submitted data, assigned node, actor IDs and
+   timestamps; store consent evidence/time, not just a boolean.
+5. cards: person_id FK, status, issued_at.
+6. distribution_nodes: identity, location, status/heartbeat, public key,
+   key version and outbox metrics; never store plaintext private key.
+7. grain_lots: type, total quantity, available quantity or computed balance.
+8. lot_cap_grants: node_id, lot_id, allocated/consumed amounts, expiry,
+   signature and lifecycle state.
+9. quota_leases: card_id, node_id, allocation, consumption, period,
+   revision/version and status.
+10. distribution_transactions: card/node/lot/lease refs, quantity, state,
+    idempotency scope/key, outcome/reason and timestamps.
+11. transaction_state_history: append-only transition record and actor.
+12. provisional_tokens: txn/node refs, canonical payload, signature,
+    nonce UNIQUE, counter, token expiry, reconciliation outcome.
+13. failures: typed event/code, node/transaction refs, retryable and metadata.
+14. audit_events: actor, action, resource, details, timestamp; insert only.
+15. idempotency_records: unique (scope, key), request hash, status/response
+    or transaction reference, created/expiry timestamps.
+16. sync_batches and sync_batch_items: batch identity, node, status, counts,
+    each token ACK and retry/result details for durable sync observability.
+
+Database constraints and indexes to define:
+- Foreign keys for person/household/card/registration/node/lot references.
+- CHECK constraints for nonnegative quantities and valid state/status enum.
+- UNIQUE normalized phone according to actual account policy.
+- UNIQUE idempotency scope/key; UNIQUE nonce; UNIQUE node/counter where
+  counters are monotonic per node.
+- Index all FK columns plus status/created_at, node/created_at,
+  card/period_start, lot/status and outbox/reconciliation status queries.
+- Use exact decimal or integer grams for quantities; avoid floating-point
+  rounding drift. Choose kg scale and rounding once, use it in both clients.
+- Implement quota + lot checks/decrements + txn/history/audit/idempotency in
+  a single transaction/RPC using row locks or conditional updates. Concurrent
+  issue attempts must never overspend a card lease, grant or lot.
+- Define whether a quota lease is a global household amount or node-specific.
+  Do not create spendable duplicate per-node leases that each sum to more than
+  a card's approved entitlement.
+
+Authorization model:
+- Enable RLS on every table exposed through Supabase APIs.
+- Verify Supabase Auth JWT on all trusted mutation routes.
+- Keep role/organization assignments in trusted profile/claims; do not trust
+  caller-supplied x-user-id or x-user-role.
+- Beneficiary can see only their own permitted projection and own card/usage.
+- Registration operator can create/read only assigned scope and cannot read
+  household income unless policy allows.
+- Distribution operator can read minimum dispensing fields and create issue
+  requests only for assigned nodes.
+- Supervisor can perform audited fallback/override with reason and identity.
+- Administrator can approve and manage lots/leases/nodes within scope.
+- Auditor gets read-only authorized audit/report data.
+- Node/device credentials are independently authenticated and scoped to that
+  node; token verification remains server-side.
+- Deny client update/delete on audit rows and signed reconciliation records.
+- Apply least privilege and test RLS as each role, including anonymous user.
+
+
+8. IMPLEMENTATION / MIGRATION STEPS
+----------------------------------
+
+Phase A - lock down expected behavior and contract
+1. Decide roles, organizations/regions, card ownership, node assignment and
+   whether beneficiaries authenticate.
+2. Decide policy for duplicate phone numbers, consent retention, household
+   PII visibility, card suspension/revocation, corrections and deletion.
+3. Decide quota period timezone/reset schedule, lot/grant semantics, whether
+   fallback can exceed lease, who authorizes it, and how rejected offline
+   issues affect stock/quota.
+4. Agree online and offline API request/response types, reason codes,
+   transaction state definitions and reconciliation outcomes.
+5. Correct gaps in section 6 with explicit tests before comparing mobile.
+
+Phase B - create Supabase project and secure schema
+6. Create Supabase development project; configure separate staging and
+   production projects. Do not use production while prototyping.
+7. Add ordered SQL migrations to the repository; create tables, FK/CHECK/
+   UNIQUE constraints, indexes, triggers/RPCs and seed data.
+8. Enable RLS immediately. Add policies for each role and write automated
+   tests that prove unauthorized reads/writes fail.
+9. Set Supabase Auth providers and role assignment process; test token expiry,
+   refresh, logout and disabled users.
+10. Store project URL and public/publishable anon key in client environment
+    config. Store service role, DB credentials and node signing secrets only
+    in server secret manager/environment; never commit them or bundle them.
+11. Add migration/backup/restore procedure and verify recovery in staging.
+
+Phase C - migrate backend as the single business-rule owner
+12. Replace CentralDatabase file operations with a typed persistence adapter
+    backed by Supabase Postgres, or implement a versioned API on the server
+    that uses Supabase. Avoid having web/mobile independently duplicate
+    approval, quota or reconciliation rules.
+13. Implement atomic Postgres transactions/RPCs for registration approval,
+    online dispense, admin lease allocation and batch reconciliation.
+14. Enforce auth, role, input validation, idempotency and actor identity at
+    this trusted boundary. Return structured errors with stable reason codes.
+15. Preserve UUID/ID references or provide deterministic mapping for existing
+    JSON records. Write a one-time validated import tool, keep a backup and
+    compare record counts and balances before cutover.
+16. Ensure no dual-write ambiguity during migration. Pick one authoritative
+    write store per rollout stage; use an explicit migration/cutover plan.
+17. Remove or guard admin reset in production. Use approved administrative
+    operations, not a public endpoint that truncates all records.
+
+Phase D - make web client use the shared data contract
+18. Replace fetch helpers with a shared typed API/data module; do not let
+    components invent API payloads or idempotency keys independently.
+19. Authenticate users and attach Supabase access token to trusted API calls.
+    Derive actor and role server-side from verified token claims.
+20. Wire all current screens/actions to the same API/schema: registration,
+    verification, approval, card list, issue, node status, sync, inventory,
+    metrics and audit.
+21. Choose and implement realtime subscriptions for relevant tables. On
+    reconnect, refresh authoritative rows and reconcile optimistic UI state.
+22. Show loading, stale/offline, permission denied and retryable/non-retryable
+    errors explicitly; do not treat a failed request as empty data.
+
+Phase E - implement mobile parity
+23. Use the same TypeScript contract package/OpenAPI schema or generate
+    equivalent client types for the chosen mobile stack.
+24. Match the five workflows/screens in section 2, field validation and
+    role-specific projections. Also include API-only capabilities only if
+    product scope requires them.
+25. Use Supabase Auth session securely; never hard-code a user ID, role or
+    organization in the mobile app.
+26. Store offline data/outbox in a durable device database with encrypted
+    sensitive data as required by device/operational policy. Do not rely on
+    React/browser memory or Supabase client cache as an offline ledger.
+27. Persist the per-node monotonic counter, signed token, nonce, idempotency
+    key, payload, signature, attempt count and ACK state before reporting a
+    successful provisional issue.
+28. Protect node private keys using platform secure hardware/key store where
+    supported; register/rotate public keys through an authenticated admin
+    workflow. Never embed a shared private key in app binaries.
+29. Retry outbox batches safely with the same transaction/token/idempotency
+    identity. Do not discard PENDING/FAILED items until server outcome is
+    persisted and displayed; allow safe resume after app/process restart.
+30. Verify central ACKs per item. Accepted/duplicate may close an item;
+    rejected/conflict/manual-review must remain visible and have an
+    authorized resolution path. Do not silently lose offline issues.
+31. Clearly distinguish "issued locally/provisional" from
+    "centrally accepted/reconciled" everywhere (card balance, receipts,
+    history and admin/audit views).
+
+Phase F - rollout and operations
+32. Build a field test with two clients and two nodes: concurrent allocation,
+    concurrent dispensing, disconnect/reconnect, duplicate batch, app restart,
+    expiry, invalid signature, counter gap, revoked card and depleted lot.
+33. Confirm web and mobile read the same new person/card/lot/transaction
+    without manual reload or wait beyond the agreed realtime/polling SLA.
+34. Confirm disconnected issue survives app/device restart and reconnect
+    never double-deducts quota or lot stock.
+35. Load-test concurrent online issue and sync; inspect DB locks, latency and
+    retry behavior.
+36. Add operational alerts, structured logs, backups, key rotation, retention,
+    incident response and safe rollback.
+37. Migrate/cut over with reconciliation reports; keep rollback path until
+    central balances and offline queues are verified.
+
+
+9. DATA FLOW SUMMARY
+--------------------
+
+Online web/mobile:
+Authenticated client
+  -> trusted API/RPC (verify user/role, validate request, idempotency)
+  -> one atomic Postgres operation:
+       validate card + active lease + active lot/grant
+       reserve/decrement balances
+       write transaction + state history + audit + idempotency result
+  -> return committed result
+  -> realtime/poll refresh on all clients.
+
+Offline mobile terminal:
+Authenticated/previously provisioned terminal with local signed quota/grant
+  -> local durable DB checks card lease + node grant + expiry
+  -> atomically increment local usage/counter and persist txn/outbox
+  -> canonicalize and Ed25519-sign provisional token
+  -> UI displays provisional (not central) result
+  -> connectivity returns; send persisted token batch with stable IDs
+  -> trusted central reconciler verifies registered public key, signature,
+     expiry, nonce, counter, node/card/lease/grant, remaining reserved quota,
+     lot, policy and replay state in an atomic transaction
+  -> central persists accepted/rejected/conflict/manual-review ACK per token
+  -> terminal durably applies ACK and refreshes central balances.
+
+Do not treat a Supabase Realtime event as a commit ACK for a specific mobile
+offline transaction. The explicit per-token reconciliation response is the
+authoritative ACK.
+
+
+10. PARITY AND ACCEPTANCE CHECKLIST
+----------------------------------
+
+Data and access:
+[ ] Web and mobile use the same Supabase project/environment and schema.
+[ ] New registration on one client appears on the other with correct status.
+[ ] No unauthenticated caller can read PII or alter records.
+[ ] Role restrictions are tested at database/API boundary, not just UI.
+[ ] Income/phone/address visibility follows agreed field-level policy.
+[ ] No service-role key or private signing key exists in client build.
+[ ] Audit rows cannot be edited/deleted by any end-user client.
+
+Registration and card:
+[ ] Same validation limits, consent capture, node assignment and duplicate
+    person policy across web and mobile.
+[ ] Verify/approve transitions are authorized and idempotent.
+[ ] Approval creates exactly one person, household, card and intended quota.
+[ ] Retry after lost response does not create duplicate card or quota.
+[ ] Card status and quota renewal/reset semantics are defined and tested.
+
+Issue and accounting:
+[ ] Same unit/precision and rules for quota, lot and grant on all clients.
+[ ] Simultaneous issue attempts cannot exceed card/node/lot capacity.
+[ ] Same idempotency key safely returns the original result.
+[ ] New key is used for a genuinely new attempt.
+[ ] Transaction and every state transition are queryable and audited.
+[ ] Fallback requires authenticated, authorized actor and recorded reason.
+[ ] Online and offline issue show provisional vs reconciled truth clearly.
+
+Offline and sync:
+[ ] Issue works with no network and survives app/device process restart.
+[ ] Private key and counter persist safely per registered node.
+[ ] Token signature verifies across mobile and server implementations.
+[ ] Duplicate nonce/batch cannot double-deduct.
+[ ] Expired, invalid, mismatched and out-of-order tokens get explicit ACKs.
+[ ] Rejected/conflicting items stay available for operator review.
+[ ] Reconnect is resumable and idempotent for every batch item.
+[ ] Card and lot central balances reconcile correctly after offline issue.
+
+UI and operations:
+[ ] Terminal selection, connectivity mode, role-based access, registration,
+    approvals, card selection, dispense, inventory, sync, audit and admin
+    functions are either present on mobile or explicitly out of scope.
+[ ] Metrics have agreed definitions and are visible where required.
+[ ] Error codes/messages have equivalent actionable mobile diagnostics.
+[ ] Realtime updates include reconnect/full-refresh behavior.
+[ ] Production reset/delete operations are protected and recoverable.
+[ ] Backup/restore, monitoring, deployment and migration rollback are tested.
+
+
+11. REPOSITORY REFERENCES
+------------------------
+
+Implementation:
+- src/client/App.tsx
+- src/client/index.css
+- src/api/server.ts
+- src/services/central-service.ts
+- src/database/storage.ts
+- src/edge-node/edge-node.ts
+- src/core/types.ts
+- src/core/state-machine.ts
+- src/core/crypto.ts
+- src/core/uuidv7.ts
+- src/tests/system.test.ts
+- vite.config.ts
+- package.json
+
+Design/specification documents (review against source before adopting):
+- database.md
+- api-spec.yaml
+- token-protocol.md
+- reconciliation.md
+- security.md
+- failure-catalog.md
+- acceptance-criteria.md
+- test-plan.md
+- deployment.md
+
+End of guide.

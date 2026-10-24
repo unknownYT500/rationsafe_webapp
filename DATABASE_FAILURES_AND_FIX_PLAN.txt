@@ -1,0 +1,99 @@
+================================================================================
+           RATIONSAFE WEB APPLICATION: DATABASE FAILURES & FIX PLAN             
+================================================================================
+Target URL: https://rationsafewebapp.vercel.app/
+Repository: https://github.com/unknownYT500/rationsafe_webapp
+Date: October 15, 2026
+
+--------------------------------------------------------------------------------
+1. DATABASE FAILURES ENCOUNTERED
+--------------------------------------------------------------------------------
+
+[DB-FAIL-01] Supabase Cloud Schema Not Provisioned (PGRST205 / 42P01)
+  - Details: Queries to https://byxvxvsvhiyeryavgafx.supabase.co fail with:
+    "Could not find the table 'public.distribution_nodes' in the schema cache"
+    "Could not find the table 'public.cards' in the schema cache"
+  - Root Cause: The Supabase project was created, but the SQL migration scripts
+    (20261014000000_graintrust_schema.sql and seed.sql) were not executed in the 
+    Supabase Dashboard SQL editor.
+
+[DB-FAIL-02] Supabase Missing Stored Procedures / RPCs (PGRST202)
+  - Details: Execution of stored procedures throws:
+    "Could not find the function public.fn_online_dispense in the schema cache"
+  - Root Cause: Atomic RPC stored procedures defined in the migration script 
+    are missing from PostgreSQL.
+
+[DB-FAIL-03] Ephemeral Serverless File Storage on Vercel
+  - Details: In serverless environments (Vercel Lambdas), the file system is
+    strictly read-only except for /tmp. 
+  - Root Cause: Any server-side JSON database (e.g. data/central_db.json) is
+    ephemeral. It gets wiped whenever the serverless function scales down or
+    restarts after a few minutes of inactivity.
+
+[DB-FAIL-04] Missing Build-Time Environment Variables on Vercel
+  - Details: Vite embeds VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY at build time.
+  - Root Cause: Because .env is properly ignored by Git for security, Vercel's
+    build process lacked these environment variables, causing the app to boot
+    in Supabase Standby Mode with empty database credentials.
+
+--------------------------------------------------------------------------------
+2. LOGICAL ERRORS IDENTIFIED
+--------------------------------------------------------------------------------
+
+[LOGIC-ERR-01] Unhandled res.json() on 404 Plain Text / HTML Responses
+  - Details: When /api/v1/* endpoints returned 404 HTML/text from Vercel edge routers,
+    invoking `await res.json()` crashed with:
+    "SyntaxError: Unexpected token 'T', 'The page c'... is not valid JSON".
+  - Solution: Replaced with safeFetchJson helper with content-type inspection.
+
+[LOGIC-ERR-02] Premature Card Array Wipe on Terminal Switch
+  - Details: In `handleNodeChange`, calling `setCards([])` wiped out the beneficiary
+    list completely whenever switching between Distribution Nodes.
+  - Solution: Retained beneficiary registry across terminal switches.
+
+[LOGIC-ERR-03] Unsafe Property Access on Empty Initial State
+  - Details: If the database returned an empty list, accessing `activeBeneficiary.allocated_qty`
+    threw: "TypeError: Cannot read properties of undefined (reading 'allocated_qty')".
+  - Solution: Added optional chaining and guaranteed fallback seed items.
+
+[LOGIC-ERR-04] Lack of Persistent Client-Side Storage
+  - Details: When disconnected from backend or Supabase, mutations (registering 
+    citizens, approving cards, dispensing quotas) only existed in temporary React
+    memory and were lost on page refresh.
+  - Solution: Implement a client-side localStorage JSON database engine.
+
+--------------------------------------------------------------------------------
+3. COMPREHENSIVE FIX PLAN: 100% AUTONOMOUS CLIENT-SIDE JSON ENGINE
+--------------------------------------------------------------------------------
+
+To make RationSafe completely failure-proof, independent of external database
+credentials, and persistent across page reloads on Vercel:
+
+Step 1: LocalStorage JSON Database Engine
+  - Create `src/client/local-storage-db.ts` to manage a client-side JSON database
+    in browser `localStorage` under key `rationsafe_json_db`.
+  - Automatically initialize with default seed data (nodes, lots, beneficiaries).
+  - Persist all mutations:
+    * Citizen registrations
+    * Card approvals and quota activations
+    * Grain disbursements and 5-stage transaction state transitions
+    * Depot stockpile deductions
+    * Append-only audit log entries
+
+Step 2: Graceful Multi-Tier Architecture
+  - Primary: Check local JSON store (instant, zero network latency, 100% reliable).
+  - Secondary: If Supabase credentials exist and tables are active, sync with cloud.
+  - Fallback: Gracefully operate purely on JSON so the team and evaluators can
+    test all features without any database configuration.
+
+Step 3: Disconnect / Deprecate Mandatory Supabase Requirement
+  - Update web/README.md to document that the app runs out of the box on JSON
+    with optional Supabase cloud synchronization.
+  - Update top navbar status badge to indicate "Engine: Local JSON Store" or
+    "Engine: Cloud Sync" dynamically.
+
+Step 4: Build, Validate, and Commit
+  - Verify complete build with `npm run build`.
+  - Verify all 20 system test scenarios with `npm test`.
+  - Commit all changes and push to GitHub (https://github.com/unknownYT500/rationsafe_webapp).
+================================================================================
