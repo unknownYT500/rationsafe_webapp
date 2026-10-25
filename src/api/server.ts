@@ -27,6 +27,9 @@ import {
   type AuthenticatedUser,
 } from './auth.js';
 import { verifyEphemeralQrToken } from '../core/ephemeral-qr.js';
+import { EdgeGuardianEngine } from '../core/edge-guardian.js';
+import { BlueprintComplianceEngine, type CardCategory } from '../core/blueprint-compliance.js';
+import { VernacularEngine, type GrievanceCategory } from '../core/vernacular-engine.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -70,6 +73,8 @@ export function createServer(customDb?: CentralDatabase) {
 
   // In-memory registry of EdgeNode instances for interactive demo
   const edgeNodes = new Map<string, EdgeDistributionNode>();
+  const edgeGuardian = new EdgeGuardianEngine();
+  const vernacularEngine = new VernacularEngine();
 
   // Ensure default seed data exists
   async function seedDefaults() {
@@ -579,6 +584,93 @@ export function createServer(customDb?: CentralDatabase) {
       }
     }
   );
+
+  // 10. Adaption Labs AI & Edge Guardian Anomaly Audit (Phase 4)
+  app.post('/api/v1/ai/audit', (req, res) => {
+    try {
+      const { transaction, transactions } = req.body;
+      if (transactions && Array.isArray(transactions)) {
+        const batchResult = edgeGuardian.batchAudit(transactions);
+        return res.json({ success: true, ...batchResult });
+      }
+      if (transaction) {
+        const assessment = edgeGuardian.evaluate(transaction);
+        return res.json({ success: true, assessment });
+      }
+      const assessment = edgeGuardian.evaluate(req.body);
+      res.json({ success: true, assessment });
+    } catch (e: any) {
+      res.status(400).json({ success: false, error: e.message });
+    }
+  });
+
+  // 11. Vernacular Voice Natural Language Query (Phase 4)
+  app.post('/api/v1/voice/query', (req, res) => {
+    try {
+      const { utterance, lang_code, context } = req.body;
+      if (!utterance) {
+        return res.status(400).json({ error: 'Missing required field: utterance' });
+      }
+      const intent = vernacularEngine.parseUtterance(utterance, lang_code || 'hi');
+      const synthesizedResponse = vernacularEngine.synthesizeResponse(intent, context || {});
+      res.json({
+        success: true,
+        intent,
+        synthesized_response: synthesizedResponse,
+      });
+    } catch (e: any) {
+      res.status(400).json({ success: false, error: e.message });
+    }
+  });
+
+  // 12. Citizen Grievance Registry (Phase 4)
+  app.post('/api/v1/grievances', (req, res) => {
+    try {
+      const { card_id, node_id, category, complaint_text } = req.body;
+      if (!card_id || !node_id || !complaint_text) {
+        return res.status(400).json({ error: 'Missing required fields: card_id, node_id, complaint_text' });
+      }
+      const ticket = vernacularEngine.registerGrievance(
+        card_id,
+        node_id,
+        (category as GrievanceCategory) || 'OTHER',
+        complaint_text
+      );
+      res.status(201).json({ success: true, grievance: ticket });
+    } catch (e: any) {
+      res.status(400).json({ success: false, error: e.message });
+    }
+  });
+
+  app.get('/api/v1/grievances', (req, res) => {
+    res.json({
+      success: true,
+      count: vernacularEngine.listGrievances().length,
+      grievances: vernacularEngine.listGrievances(),
+    });
+  });
+
+  // 13. Blueprint Statutory Policy & NFSA Entitlement Validation (Phase 4)
+  app.post('/api/v1/blueprint/validate', (req, res) => {
+    try {
+      const { card_id, category, family_count, monthly_consumed, requested_qty } = req.body;
+      if (!card_id || requested_qty === undefined) {
+        return res.status(400).json({ error: 'Missing required fields: card_id, requested_qty' });
+      }
+      const result = BlueprintComplianceEngine.validateDispense(
+        {
+          cardId: card_id,
+          category: (category as CardCategory) || 'PHH',
+          familyCount: Number(family_count) || 4,
+          monthlyQuotaConsumed: Number(monthly_consumed) || 0,
+        },
+        Number(requested_qty)
+      );
+      res.json({ success: true, compliance: result });
+    } catch (e: any) {
+      res.status(400).json({ success: false, error: e.message });
+    }
+  });
 
   return { app, service, db, edgeNodes };
 }
