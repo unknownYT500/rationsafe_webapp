@@ -225,3 +225,34 @@ export interface SyncBatchResponse {
   manual_review_count: number;
   items: SyncBatchItemAck[];
 }
+
+export type OutboxItemStatus = 'PENDING' | 'RETRYING' | 'SYNCED' | 'FAILED' | 'DEAD_LETTER';
+
+export interface OutboxItem {
+  id: string;
+  token: SignedProvisionalToken;
+  status: OutboxItemStatus;
+  attempts: number;
+  last_error?: string;
+  last_attempt_at?: string;
+  next_retry_at?: string;
+  quarantined_at?: string;
+  created_at: string;
+}
+
+export interface EphemeralQrPayload {
+  v: 1;
+  cid: string;
+  sub: string;
+  ts: number;
+  exp: number;
+  nonce: string;
+  sig: string;
+}
+
+export interface EphemeralQrVerification {
+  isValid: boolean;
+  code: 'OK' | 'ERR_QR_EXPIRED' | 'ERR_QR_REPLAYED' | 'ERR_QR_INVALID_SIGNATURE' | 'ERR_QR_MALFORMED' | 'ERR_QR_CLOCK_SKEW';
+  message: string;
+  payload?: EphemeralQrPayload;
+}

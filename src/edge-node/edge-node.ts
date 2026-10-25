@@ -26,8 +26,10 @@ export interface EdgeNodeConfig {
 export interface EdgeOutboxItem {
   id: string;
   token: SignedProvisionalToken;
-  status: 'PENDING' | 'SYNCED' | 'FAILED';
+  status: 'PENDING' | 'RETRYING' | 'SYNCED' | 'FAILED' | 'DEAD_LETTER';
   attempts: number;
+  last_error?: string;
+  quarantined_at?: string;
   created_at: string;
 }
 
@@ -253,10 +255,12 @@ export class EdgeDistributionNode {
   }
 
   /**
-   * Generates a sync batch of pending provisional tokens.
+   * Generates a sync batch of pending/retrying provisional tokens in paginated chunks (default: 50).
    */
-  public generateSyncBatch(maxItems = 100): SyncBatchRequest | null {
-    const pending = this.state.outbox.filter((item) => item.status === 'PENDING').slice(0, maxItems);
+  public generateSyncBatch(maxItems = 50): SyncBatchRequest | null {
+    const pending = this.state.outbox
+      .filter((item) => item.status === 'PENDING' || item.status === 'RETRYING')
+      .slice(0, maxItems);
     if (pending.length === 0) return null;
 
     return {
@@ -266,7 +270,7 @@ export class EdgeDistributionNode {
   }
 
   /**
-   * Processes ACK response from central server.
+   * Processes ACK response from central server with Dead-Letter Queue (DLQ) quarantine.
    */
   public processSyncResponse(response: SyncBatchResponse): void {
     for (const ack of response.items) {
@@ -275,7 +279,16 @@ export class EdgeDistributionNode {
         if (ack.outcome === 'ACCEPTED' || ack.outcome === 'DUPLICATE') {
           item.status = 'SYNCED';
         } else if (ack.outcome === 'REJECTED' || ack.outcome === 'CONFLICT') {
-          item.status = 'FAILED';
+          item.attempts += 1;
+          if (item.attempts >= 5 || ack.outcome === 'CONFLICT') {
+            // Quarantine permanently to Dead-Letter Queue (prevents head-of-line blocking)
+            item.status = 'DEAD_LETTER';
+            item.quarantined_at = new Date().toISOString();
+            item.last_error = ack.message || 'Exceeded retry threshold or fatal conflict';
+          } else {
+            item.status = 'RETRYING';
+            item.last_error = ack.message || 'Temporary sync failure';
+          }
         }
       }
 
@@ -284,8 +297,117 @@ export class EdgeDistributionNode {
         txn.state = 'RECONCILED';
       }
     }
-    // Retain completed entries in history, remove confirmed synced items
+    // Remove confirmed synced items; retain active and quarantined items
     this.state.outbox = this.state.outbox.filter((item) => item.status !== 'SYNCED');
     this.persistState();
   }
+
+  /**
+   * Returns breakdown of active outbox states.
+   */
+  public getOutboxStats(): {
+    pending: number;
+    retrying: number;
+    deadLetter: number;
+    total: number;
+    PENDING: number;
+    RETRYING: number;
+    DEAD_LETTER: number;
+    TOTAL: number;
+  } {
+    let pending = 0;
+    let retrying = 0;
+    let deadLetter = 0;
+    for (const item of this.state.outbox) {
+      if (item.status === 'PENDING') pending++;
+      else if (item.status === 'RETRYING') retrying++;
+      else if (item.status === 'DEAD_LETTER') deadLetter++;
+    }
+    const total = this.state.outbox.length;
+    return {
+      pending,
+      retrying,
+      deadLetter,
+      total,
+      PENDING: pending,
+      RETRYING: retrying,
+      DEAD_LETTER: deadLetter,
+      TOTAL: total,
+    };
+  }
+
+  /**
+   * Directly enqueues a signed provisional token to the local outbox.
+   */
+  public addToOutbox(token: SignedProvisionalToken): void {
+    this.state.outbox.push({
+      id: token.id || generateUuidV7(),
+      token,
+      status: 'PENDING',
+      attempts: 0,
+      created_at: new Date().toISOString(),
+    });
+    this.persistState();
+  }
+
+  /**
+   * Retrieves quarantined items from Dead-Letter Queue.
+   */
+  public getDeadLetterQueue(): EdgeOutboxItem[] {
+    return this.state.outbox.filter((item) => item.status === 'DEAD_LETTER');
+  }
+
+  /**
+   * Simulates/applies a sync attempt failure to a specific outbox item, triggering DLQ if threshold exceeded.
+   */
+  public markOutboxItemFailed(tokenId: string, errorReason = 'Sync failed', maxAttempts = 5): void {
+    const item = this.state.outbox.find((o) => o.token.id === tokenId || o.token.payload.tid === tokenId || o.id === tokenId);
+    if (!item) return;
+
+    item.attempts += 1;
+    if (item.attempts >= maxAttempts) {
+      item.status = 'DEAD_LETTER';
+      item.quarantined_at = new Date().toISOString();
+      item.last_error = errorReason;
+    } else {
+      item.status = 'RETRYING';
+      item.last_error = errorReason;
+    }
+    this.persistState();
+  }
+
+  /**
+   * Generates a sync batch chunk (maxItems) from an offset cursor and returns tokens plus remaining pending count.
+   */
+  public generateChunkedSyncBatch(maxItems = 50, offset = 0): {
+    tokens: SignedProvisionalToken[];
+    remainingPendingCount: number;
+    nextOffset: number;
+  } {
+    const eligible = this.state.outbox.filter((item) => item.status === 'PENDING' || item.status === 'RETRYING');
+    const chunk = eligible.slice(offset, offset + maxItems);
+    const remainingPendingCount = Math.max(0, eligible.length - (offset + chunk.length));
+    return {
+      tokens: chunk.map((item) => item.token),
+      remainingPendingCount,
+      nextOffset: offset + chunk.length,
+    };
+  }
+
+  /**
+   * Re-queues a Dead-Letter Queue token for retry.
+   */
+  public requeueDeadLetter(tokenId: string): boolean {
+    const item = this.state.outbox.find((o) => (o.token.id === tokenId || o.token.payload.tid === tokenId || o.id === tokenId) && o.status === 'DEAD_LETTER');
+    if (item) {
+      item.status = 'PENDING';
+      item.attempts = 0;
+      delete item.quarantined_at;
+      delete item.last_error;
+      this.persistState();
+      return true;
+    }
+    return false;
+  }
 }
+

@@ -26,6 +26,7 @@ import {
   verifyWebAuthnChallenge,
   type AuthenticatedUser,
 } from './auth.js';
+import { verifyEphemeralQrToken } from '../core/ephemeral-qr.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -244,6 +245,19 @@ export function createServer(customDb?: CentralDatabase) {
 
   app.get('/api/v1/auth/me', requireAuth, (req, res) => {
     res.json({ user: req.user });
+  });
+
+  // 1a. Dynamic Ephemeral QR Verification (Anti-Replay & 180s TTL)
+  app.post('/api/v1/qr/verify', requireAuth, (req, res) => {
+    const { qr_payload } = req.body;
+    if (!qr_payload) {
+      return res.status(400).json({ code: 'ERR_QR_MALFORMED', message: 'Missing qr_payload' });
+    }
+    const result = verifyEphemeralQrToken(qr_payload);
+    if (!result.isValid) {
+      return res.status(400).json(result);
+    }
+    res.json(result);
   });
 
   // 1. Registrations (PRD 3.1 & TRD Section 2)
