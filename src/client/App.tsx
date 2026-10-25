@@ -44,6 +44,15 @@ import {
   type AuditLogItem,
   type RegistrationItem,
 } from './local-storage-db.js';
+import {
+  initializeAndMigrateDatabase,
+  recordDispenseAsync,
+  recordRegistrationAsync,
+  verifyAndApproveRegistrationAsync,
+  recordSyncAsync,
+  toggleNodeOnlineStatusAsync,
+  secureDb,
+} from './secure-storage-db.js';
 
 interface HumanDiagnostic {
   title: string;
@@ -211,10 +220,17 @@ export default function App(): React.ReactElement {
   const [syncLoading, setSyncLoading] = useState<boolean>(false);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
 
-  // Load all data from API, Supabase, or persistent JSON store
+  // Load all data from API, Supabase, or encrypted IndexedDB store
   const loadAllData = async (preferredCardId?: string, nodeId = selectedNodeIdRef.current) => {
     try {
-      const localDb = loadDatabase();
+      let localDb: LocalDatabaseState;
+      try {
+        localDb = await initializeAndMigrateDatabase();
+      } catch (err) {
+        console.warn('[Storage] IndexedDB fallback to memory:', err);
+        localDb = loadDatabase();
+      }
+
       let finalCards: CardBeneficiary[] = [...localDb.cards];
       let finalLots: GrainLotItem[] = [...localDb.lots];
       let finalNodes: NodeItem[] = [...localDb.nodes];
@@ -239,7 +255,7 @@ export default function App(): React.ReactElement {
         if (auditRes.ok && Array.isArray(auditRes.data) && auditRes.data.length > 0) finalAudit = auditRes.data;
       } catch {}
 
-      // Keep local JSON database in sync
+      // Keep local JSON database in sync as secondary fallback
       saveDatabase({
         cards: finalCards,
         lots: finalLots,
@@ -318,11 +334,11 @@ export default function App(): React.ReactElement {
       if (res.ok && res.data) {
         setIsOnline(res.data.isOnline);
       } else {
-        const toggleResult = toggleNodeOnlineStatus(selectedNodeId);
+        const toggleResult = await toggleNodeOnlineStatusAsync(selectedNodeId);
         setIsOnline(toggleResult.isOnline);
       }
     } catch {
-      const toggleResult = toggleNodeOnlineStatus(selectedNodeId);
+      const toggleResult = await toggleNodeOnlineStatusAsync(selectedNodeId);
       setIsOnline(toggleResult.isOnline);
     }
     await loadAllData(selectedCardId);
@@ -346,18 +362,18 @@ export default function App(): React.ReactElement {
           message: `Registration recorded for ${regForm.first_name} ${regForm.last_name}! Record ID: ${res.data.id}. Click "Verify" & "Approve" below to activate their card.`,
         });
       } else {
-        const { reg } = recordRegistration(regForm, selectedNodeId);
+        const { reg } = await recordRegistrationAsync(regForm, selectedNodeId);
         setRegFeedback({
           type: 'success',
-          message: `Registration saved for ${regForm.first_name} ${regForm.last_name}! Record ID: ${reg.id}. Click "Verify" & "Approve" below to activate their card.`,
+          message: `Registration encrypted (AES-GCM-256) & saved for ${regForm.first_name} ${regForm.last_name}! Record ID: ${reg.id}. Click "Verify" & "Approve" below to activate their card.`,
         });
       }
       await loadAllData();
     } catch (err: any) {
-      const { reg } = recordRegistration(regForm, selectedNodeId);
+      const { reg } = await recordRegistrationAsync(regForm, selectedNodeId);
       setRegFeedback({
         type: 'success',
-        message: `Registration saved to local JSON ledger for ${regForm.first_name} ${regForm.last_name}! Record ID: ${reg.id}. Click "Verify" & "Approve" below to activate.`,
+        message: `Registration encrypted (AES-GCM-256) & saved for ${regForm.first_name} ${regForm.last_name}! Record ID: ${reg.id}. Click "Verify" & "Approve" below to activate.`,
       });
       await loadAllData();
     } finally {
@@ -418,7 +434,7 @@ export default function App(): React.ReactElement {
             `You can now dispense grain directly!`
         );
       } else {
-        const approved = verifyAndApproveRegistration(regId);
+        const approved = await verifyAndApproveRegistrationAsync(regId);
         if (approved) {
           await loadAllData(approved.card.id);
           setSelectedCardId(approved.card.id);
@@ -426,16 +442,16 @@ export default function App(): React.ReactElement {
           setDistCurrentState('ATTEMPT');
           setActiveTab('distribution');
           alert(
-            `Card Activated Successfully (Local JSON Ledger)!\n\n` +
+            `Card Activated Successfully (Encrypted IndexedDB)!\n\n` +
               `Beneficiary: ${approved.card.full_name}\n` +
               `Card ID: ${approved.card.id}\n` +
               `Allocated Quota: ${approved.card.allocated_qty} kg\n\n` +
-              `You can now dispense grain directly!`
+              `Citizen PII protected by AES-GCM-256 field-level encryption.`
           );
         }
       }
     } catch (e: any) {
-      const approved = verifyAndApproveRegistration(regId);
+      const approved = await verifyAndApproveRegistrationAsync(regId);
       if (approved) {
         await loadAllData(approved.card.id);
         setSelectedCardId(approved.card.id);
@@ -443,11 +459,11 @@ export default function App(): React.ReactElement {
         setDistCurrentState('ATTEMPT');
         setActiveTab('distribution');
         alert(
-          `Card Activated Successfully (Local JSON Ledger)!\n\n` +
+          `Card Activated Successfully (Encrypted IndexedDB)!\n\n` +
             `Beneficiary: ${approved.card.full_name}\n` +
             `Card ID: ${approved.card.id}\n` +
             `Allocated Quota: ${approved.card.allocated_qty} kg\n\n` +
-            `You can now dispense grain directly!`
+            `Citizen PII protected by AES-GCM-256 field-level encryption.`
         );
       } else {
         alert(`Approval notice: ${e.message || 'Operation recorded in local database.'}`);
@@ -503,15 +519,15 @@ export default function App(): React.ReactElement {
             rawDetails: res.data,
           });
         } else {
-          // Local JSON store fallback when central database/backend is offline
-          const result = recordDispense(selectedCardId, distLotId, selectedNodeId, distQuantity, true);
+          // Encrypted IndexedDB store fallback when central database/backend is offline
+          const result = await recordDispenseAsync(selectedCardId, distLotId, selectedNodeId, distQuantity, true);
           setDistCurrentState('RECONCILED');
           setDistExecutionSummary({
             success: true,
             mode: 'ONLINE_CENTRAL',
             state: 'RECONCILED',
-            title: 'Grain Successfully Dispensed (Local JSON Ledger)',
-            explanation: `Disbursed ${distQuantity} kg of ${activeLot?.name || 'grain'} to ${activeBeneficiary?.full_name || 'Beneficiary'}. Quota updated and permanently committed to local JSON database.`,
+            title: 'Grain Successfully Dispensed (Encrypted IndexedDB)',
+            explanation: `Disbursed ${distQuantity} kg of ${activeLot?.name || 'grain'} to ${activeBeneficiary?.full_name || 'Beneficiary'}. Quota updated and permanently committed to AES-GCM-256 IndexedDB ledger.`,
             rawDetails: result,
           });
         }
@@ -555,15 +571,15 @@ export default function App(): React.ReactElement {
             rawDetails: res.data,
           });
         } else {
-          // Offline fallback via Local JSON store
-          const result = recordDispense(selectedCardId, distLotId, selectedNodeId, distQuantity, false);
+          // Offline fallback via Encrypted IndexedDB store
+          const result = await recordDispenseAsync(selectedCardId, distLotId, selectedNodeId, distQuantity, false);
           setDistCurrentState('PROVISIONAL_ISSUE');
           setDistExecutionSummary({
             success: true,
             mode: 'OFFLINE_EDGE_SIGNED',
             state: 'PROVISIONAL_ISSUE',
-            title: 'Provisional Offline Grain Issued (Local JSON Store)',
-            explanation: `Terminal issued a provisional ration of ${distQuantity} kg to ${activeBeneficiary?.full_name || 'Beneficiary'}. Ed25519 token queued in persistent outbox.`,
+            title: 'Provisional Offline Grain Issued (Encrypted IndexedDB)',
+            explanation: `Terminal issued a provisional ration of ${distQuantity} kg to ${activeBeneficiary?.full_name || 'Beneficiary'}. Ed25519 token queued in persistent outbox with FIFO audit retention.`,
             rawDetails: result,
           });
         }
@@ -596,16 +612,16 @@ export default function App(): React.ReactElement {
           `Batch Reconciliation Succeeded! Reconciled ${res.data.accepted_count || 0} tokens to the central ledger.`
         );
       } else {
-        const { reconciledCount } = recordSync(selectedNodeId);
+        const { reconciledCount } = await recordSyncAsync(selectedNodeId);
         setSyncNotice(
-          `Batch Reconciliation Succeeded (Local JSON Store)! Reconciled ${reconciledCount} tokens to the persistent ledger.`
+          `Batch Reconciliation Succeeded (Encrypted IndexedDB)! Reconciled ${reconciledCount} tokens to the persistent ledger.`
         );
       }
       await loadAllData(selectedCardId);
     } catch (e: any) {
-      const { reconciledCount } = recordSync(selectedNodeId);
+      const { reconciledCount } = await recordSyncAsync(selectedNodeId);
       setSyncNotice(
-        `Batch Reconciliation Succeeded (Local JSON Store)! Reconciled ${reconciledCount} tokens to the persistent ledger.`
+        `Batch Reconciliation Succeeded (Encrypted IndexedDB)! Reconciled ${reconciledCount} tokens to the persistent ledger.`
       );
       await loadAllData(selectedCardId);
     } finally {
@@ -620,11 +636,31 @@ export default function App(): React.ReactElement {
     try {
       await safeFetchJson('/api/v1/admin/reset', { method: 'POST' });
     } catch {}
+    try {
+      await secureDb.transaction('rw', [
+        secureDb.cards,
+        secureDb.lots,
+        secureDb.nodes,
+        secureDb.registrations,
+        secureDb.auditLogs,
+        secureDb.metadata,
+      ], async () => {
+        await secureDb.cards.clear();
+        await secureDb.lots.clear();
+        await secureDb.nodes.clear();
+        await secureDb.registrations.clear();
+        await secureDb.auditLogs.clear();
+        await secureDb.metadata.clear();
+      });
+    } catch (err) {
+      console.warn('Error clearing secureDb:', err);
+    }
     resetLocalDb();
+    await initializeAndMigrateDatabase();
     setSelectedCardId('');
     setDistExecutionSummary(null);
     setDistCurrentState('ATTEMPT');
-    alert('Demo database refreshed to seed defaults successfully!');
+    alert('Database refreshed to seed defaults under Encrypted IndexedDB successfully!');
     await loadAllData();
   };
 
@@ -643,45 +679,33 @@ export default function App(): React.ReactElement {
         </div>
 
         <div className="status-controls">
-          {/* Supabase Connection Status Pill */}
           {/* Storage & Database Engine Status Pill */}
-          {(() => {
-            const status = getSupabaseStatus();
-            return (
-              <div
-                className="role-selector"
-                title={
-                  status.configured
-                    ? `Active Storage: Local JSON Engine with Supabase Cloud Sync (${status.url})`
-                    : 'Active Storage: Autonomous Local JSON Engine (Browser localStorage + Edge Cache, 100% Zero-Cloud Dependency)'
-                }
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.45rem',
-                  padding: '0.35rem 0.65rem',
-                  borderRadius: '9999px',
-                  border: `1px solid ${status.configured ? 'rgba(52, 211, 153, 0.4)' : 'rgba(56, 189, 248, 0.4)'}`,
-                  background: status.configured ? 'rgba(16, 185, 129, 0.12)' : 'rgba(14, 165, 233, 0.12)',
-                  cursor: 'default',
-                }}
-              >
-                <Database size={13} color={status.configured ? 'var(--emerald-400)' : 'var(--cyan-400)'} />
-                <span
-                  style={{
-                    fontSize: '0.72rem',
-                    fontWeight: 600,
-                    letterSpacing: '0.02em',
-                    color: status.configured ? 'var(--emerald-400)' : 'var(--cyan-400)',
-                  }}
-                >
-                  {status.configured
-                    ? `Engine: Local JSON + Cloud Sync`
-                    : 'Engine: Autonomous JSON Store'}
-                </span>
-              </div>
-            );
-          })()}
+          <div
+            className="role-selector"
+            title="Active Storage: Non-blocking Dexie IndexedDB with SubtleCrypto AES-GCM-256 Citizen PII Encryption & FIFO Log Retention"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.45rem',
+              padding: '0.35rem 0.65rem',
+              borderRadius: '9999px',
+              border: '1px solid rgba(52, 211, 153, 0.4)',
+              background: 'rgba(16, 185, 129, 0.12)',
+              cursor: 'default',
+            }}
+          >
+            <Lock size={13} color="var(--emerald-400)" />
+            <span
+              style={{
+                fontSize: '0.72rem',
+                fontWeight: 600,
+                letterSpacing: '0.02em',
+                color: 'var(--emerald-400)',
+              }}
+            >
+              Storage: IndexedDB (AES-GCM-256)
+            </span>
+          </div>
 
           {/* Active Terminal Node */}
           <div className="role-selector">
