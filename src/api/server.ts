@@ -30,6 +30,8 @@ import { verifyEphemeralQrToken } from '../core/ephemeral-qr.js';
 import { EdgeGuardianEngine } from '../core/edge-guardian.js';
 import { BlueprintComplianceEngine, type CardCategory } from '../core/blueprint-compliance.js';
 import { VernacularEngine, type GrievanceCategory } from '../core/vernacular-engine.js';
+import { TelemetryEngine, type TraceContext } from '../core/telemetry.js';
+import { StructuredLogger } from '../core/logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -47,6 +49,47 @@ export function createServer(customDb?: CentralDatabase) {
   app.use(globalRateLimiter);
 
   app.use(express.json({ limit: '1mb' }));
+
+  const logger = new StructuredLogger('central_gateway');
+
+  // 4. OpenTelemetry W3C Distributed Tracing & PII-Scrubbed Logging Middleware (Phase 5)
+  app.use((req, res, next) => {
+    const rawTraceparent = (req.header('traceparent') || req.header('x-traceparent')) as string | undefined;
+    const traceCtx = TelemetryEngine.createTraceContext(rawTraceparent);
+    (req as any).traceContext = traceCtx;
+    (req as any).traceId = traceCtx.traceId;
+    TelemetryEngine.setActiveContext(traceCtx);
+
+    res.setHeader('X-Trace-Id', traceCtx.traceId);
+    res.setHeader('traceparent', TelemetryEngine.formatTraceparent(traceCtx));
+    res.setHeader('traceresponse', TelemetryEngine.formatTraceparent(traceCtx));
+
+    const startTime = Date.now();
+    const span = TelemetryEngine.startSpan(`HTTP ${req.method} ${req.path}`, {
+      parent: traceCtx,
+      attributes: {
+        'http.method': req.method,
+        'http.url': req.url,
+        'http.route': req.path,
+      },
+    });
+
+    res.on('finish', () => {
+      const duration = Date.now() - startTime;
+      span.setAttribute('http.status_code', res.statusCode);
+      span.setAttribute('http.duration_ms', duration);
+      span.end(res.statusCode >= 400 ? 'ERROR' : 'OK');
+
+      logger.info(`HTTP ${req.method} ${req.path} -> ${res.statusCode} (${duration}ms)`, {
+        method: req.method,
+        path: req.path,
+        status: res.statusCode,
+        duration_ms: duration,
+      });
+    });
+
+    next();
+  });
 
   // Support both /api/v1/... and /v1/... when running behind serverless rewrites
   app.use((req, _res, next) => {
@@ -670,6 +713,31 @@ export function createServer(customDb?: CentralDatabase) {
     } catch (e: any) {
       res.status(400).json({ success: false, error: e.message });
     }
+  });
+
+  // 14. OpenTelemetry Spans & Distributed Trace Records (Phase 5)
+  app.get('/api/v1/telemetry/spans', (_req, res) => {
+    res.json({
+      success: true,
+      count: TelemetryEngine.getSpans().length,
+      spans: TelemetryEngine.getSpans(),
+    });
+  });
+
+  // 15. PII-Scrubbed Structured Audit Logs (Phase 5)
+  app.get('/api/v1/telemetry/logs', (_req, res) => {
+    res.json({
+      success: true,
+      count: StructuredLogger.getLogs().length,
+      logs: StructuredLogger.getLogs(),
+    });
+  });
+
+  // 16. Reset Telemetry Buffers (Phase 5 Test / Maintenance)
+  app.post('/api/v1/telemetry/clear', (_req, res) => {
+    TelemetryEngine.clear();
+    StructuredLogger.clear();
+    res.json({ success: true, message: 'Telemetry spans and structured logs cleared.' });
   });
 
   return { app, service, db, edgeNodes };
