@@ -139,12 +139,30 @@ function getFailureDiagnostic(code: string | undefined, message: string | undefi
   }
 }
 
+let currentAuthToken = '';
+let currentActiveRole: UserRole = 'DISTRIBUTION_OPERATOR';
+
+export function setClientAuthToken(token: string) {
+  currentAuthToken = token;
+}
+
 async function safeFetchJson<T = any>(
   input: RequestInfo | URL,
   init?: RequestInit
 ): Promise<{ ok: boolean; status: number; data?: T; error?: string }> {
   try {
-    const res = await fetch(input, init);
+    const headers = new Headers(init?.headers || {});
+    if (currentAuthToken && !headers.has('Authorization')) {
+      headers.set('Authorization', `Bearer ${currentAuthToken}`);
+    }
+    if (!headers.has('x-user-role')) {
+      headers.set('x-user-role', currentActiveRole);
+    }
+    if (!headers.has('x-user-id')) {
+      headers.set('x-user-id', `operator_${currentActiveRole.toLowerCase()}`);
+    }
+
+    const res = await fetch(input, { ...init, headers });
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
       const data = await res.json();
@@ -174,6 +192,25 @@ export default function App(): React.ReactElement {
   const [isOnline, setIsOnline] = useState<boolean>(true);
   const [selectedNodeId, setSelectedNodeId] = useState<string>('node-alpha-001');
   const selectedNodeIdRef = useRef(selectedNodeId);
+
+  // Sync token whenever role changes
+  useEffect(() => {
+    currentActiveRole = activeRole;
+    fetch('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: activeRole, username: `operator_${activeRole.toLowerCase()}` }),
+    })
+      .then((r) => r.json())
+      .then((res) => {
+        if (res.token) {
+          currentAuthToken = res.token;
+        }
+      })
+      .catch((err) => {
+        console.warn('[ZeroTrust] Token acquisition notice:', err);
+      });
+  }, [activeRole]);
 
   // Core Data
   const [cards, setCards] = useState<CardBeneficiary[]>([]);
