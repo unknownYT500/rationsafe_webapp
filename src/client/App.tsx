@@ -32,6 +32,7 @@ import {
   loadDatabase,
   saveDatabase,
   resetDatabase as resetLocalDb,
+  getInitialSeedDatabase,
   recordRegistration,
   verifyAndApproveRegistration,
   recordDispense,
@@ -296,6 +297,16 @@ export default function App(): React.ReactElement {
         if (regsRes.ok && Array.isArray(regsRes.data) && regsRes.data.length > 0) finalRegs = regsRes.data;
         if (auditRes.ok && Array.isArray(auditRes.data) && auditRes.data.length > 0) finalAudit = auditRes.data;
       } catch {}
+
+      // Ensure nodes and lots never empty in edge client
+      if (finalNodes.length === 0) {
+        const seed = getInitialSeedDatabase();
+        finalNodes = [...seed.nodes];
+      }
+      if (finalLots.length === 0) {
+        const seed = getInitialSeedDatabase();
+        finalLots = [...seed.lots];
+      }
 
       // Keep local JSON database in sync as secondary fallback
       saveDatabase({
@@ -765,10 +776,11 @@ export default function App(): React.ReactElement {
           <div className="role-selector">
             <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Terminal:</span>
             <select
-              value={selectedNodeId}
+              value={selectedNodeId || 'node-alpha-001'}
               onChange={(e) => handleNodeChange(e.target.value)}
+              style={{ minWidth: '180px', cursor: 'pointer' }}
             >
-              {nodes.map((n) => (
+              {(nodes.length > 0 ? nodes : getInitialSeedDatabase().nodes).map((n) => (
                 <option key={n.id} value={n.id}>
                   {n.name}
                 </option>

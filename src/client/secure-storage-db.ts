@@ -189,6 +189,24 @@ export async function initializeAndMigrateDatabase(): Promise<LocalDatabaseState
         console.log('[SecureStorage] Legacy plaintext localStorage successfully purged.');
       }
     }
+
+    // Ensure nodes table is populated even if database was partially initialized
+    const nodeCount = await secureDb.nodes.count();
+    if (nodeCount === 0) {
+      const seed = getInitialSeedDatabase();
+      for (const node of seed.nodes) {
+        await secureDb.nodes.put(node);
+      }
+    }
+
+    // Ensure lots table is populated
+    const lotCount = await secureDb.lots.count();
+    if (lotCount === 0) {
+      const seed = getInitialSeedDatabase();
+      for (const lot of seed.lots) {
+        await secureDb.lots.put(lot);
+      }
+    }
   } catch (err) {
     console.error('[SecureStorage] Initialization / Migration error:', err);
   }
@@ -200,7 +218,7 @@ export async function initializeAndMigrateDatabase(): Promise<LocalDatabaseState
  * Retrieves the complete decrypted database state for UI rendering.
  */
 export async function getFullDecryptedState(): Promise<LocalDatabaseState> {
-  const [encryptedCards, lots, nodes, encryptedRegs, rawAuditLogs, metricsRecord] = await Promise.all([
+  let [encryptedCards, lots, nodes, encryptedRegs, rawAuditLogs, metricsRecord] = await Promise.all([
     secureDb.cards.toArray(),
     secureDb.lots.toArray(),
     secureDb.nodes.toArray(),
@@ -208,6 +226,26 @@ export async function getFullDecryptedState(): Promise<LocalDatabaseState> {
     secureDb.auditLogs.orderBy('timestamp').reverse().toArray(),
     secureDb.metadata.get('metrics'),
   ]);
+
+  if (nodes.length === 0) {
+    const seed = getInitialSeedDatabase();
+    nodes = [...seed.nodes];
+    try {
+      for (const node of nodes) {
+        await secureDb.nodes.put(node);
+      }
+    } catch {}
+  }
+
+  if (lots.length === 0) {
+    const seed = getInitialSeedDatabase();
+    lots = [...seed.lots];
+    try {
+      for (const lot of lots) {
+        await secureDb.lots.put(lot);
+      }
+    } catch {}
+  }
 
   // Decrypt cards and registrations asynchronously
   const [cards, registrations] = await Promise.all([
