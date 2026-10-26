@@ -237,6 +237,11 @@ export default function App(): React.ReactElement {
     rawDetails?: any;
   } | null>(null);
 
+  // RBAC Permission Gates matching backend security policies
+  const canDispense = ['DISTRIBUTION_OPERATOR', 'SUPERVISOR', 'ADMINISTRATOR'].includes(activeRole);
+  const canApproveRegistrations = ['SUPERVISOR', 'ADMINISTRATOR'].includes(activeRole);
+  const canResetDb = activeRole === 'ADMINISTRATOR';
+
   // Registration Form
   const [regForm, setRegForm] = useState({
     first_name: '',
@@ -443,6 +448,10 @@ export default function App(): React.ReactElement {
 
   // Verify and Approve Registration -> Auto-switches to new Card!
   const handleApproveRegistration = async (regId: string) => {
+    if (!canApproveRegistrations) {
+      alert(`Access Denied (RBAC): Current role "${activeRole}" does not have card approval authority. Please switch role to Field Supervisor or Administrator to approve registrations.`);
+      return;
+    }
     try {
       // 1. Verify if not already verified
       await safeFetchJson(`/api/v1/registrations/${regId}/verify`, {
@@ -510,6 +519,10 @@ export default function App(): React.ReactElement {
 
   // Dispense Grain (Online or Offline with Clear Text Explanations)
   const handleDispenseGrain = async () => {
+    if (!canDispense) {
+      alert(`Access Denied (RBAC): Current role "${activeRole}" cannot dispense grain. Switch to Distribution Operator, Field Supervisor, or Administrator.`);
+      return;
+    }
     if (!selectedCardId || !distLotId) return;
     setDistLoading(true);
     setDistExecutionSummary(null);
@@ -667,6 +680,10 @@ export default function App(): React.ReactElement {
   };
 
   const handleResetDatabase = async () => {
+    if (!canResetDb) {
+      alert(`Access Denied (RBAC): Only the Administrator role can execute database reset. Current role: "${activeRole}".`);
+      return;
+    }
     if (!window.confirm('Are you sure you want to reset demo records to seed defaults?')) {
       return;
     }
@@ -770,15 +787,24 @@ export default function App(): React.ReactElement {
           </button>
 
           {/* Role Switcher */}
-          <div className="role-selector">
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Role:</span>
-            <select value={activeRole} onChange={(e) => setActiveRole(e.target.value as UserRole)}>
-              <option value="DISTRIBUTION_OPERATOR">Distribution Operator</option>
-              <option value="REGISTRATION_OPERATOR">Registration Operator</option>
-              <option value="SUPERVISOR">Field Supervisor</option>
-              <option value="AUDITOR">Auditor</option>
-              <option value="ADMINISTRATOR">Administrator</option>
-            </select>
+          <div className="role-selector" style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Role:</span>
+              <select value={activeRole} onChange={(e) => setActiveRole(e.target.value as UserRole)}>
+                <option value="DISTRIBUTION_OPERATOR">Distribution Operator</option>
+                <option value="REGISTRATION_OPERATOR">Registration Operator</option>
+                <option value="SUPERVISOR">Field Supervisor</option>
+                <option value="AUDITOR">Auditor</option>
+                <option value="ADMINISTRATOR">Administrator</option>
+              </select>
+            </div>
+            <span style={{ fontSize: '0.66rem', color: activeRole === 'AUDITOR' ? 'var(--cyan-400)' : activeRole === 'ADMINISTRATOR' ? 'var(--rose-400)' : activeRole === 'SUPERVISOR' ? 'var(--emerald-400)' : 'var(--amber-400)' }}>
+              {activeRole === 'DISTRIBUTION_OPERATOR' && '● POS Dispensing & Warehouse Stock'}
+              {activeRole === 'REGISTRATION_OPERATOR' && '● Citizen Intake & KYC Enrollment'}
+              {activeRole === 'SUPERVISOR' && '● Field Approvals, Override & Dispense'}
+              {activeRole === 'AUDITOR' && '● Read-Only Audit & Trace Oversight'}
+              {activeRole === 'ADMINISTRATOR' && '● Full Administration & Key Governance'}
+            </span>
           </div>
 
           {/* Reset Database Button */}
@@ -787,14 +813,17 @@ export default function App(): React.ReactElement {
             style={{
               fontSize: '0.75rem',
               padding: '0.35rem 0.65rem',
-              color: 'var(--rose-400)',
-              borderColor: 'rgba(244, 63, 94, 0.4)',
-              background: 'rgba(244, 63, 94, 0.1)',
+              color: canResetDb ? 'var(--rose-400)' : 'var(--text-muted)',
+              borderColor: canResetDb ? 'rgba(244, 63, 94, 0.4)' : 'rgba(255, 255, 255, 0.1)',
+              background: canResetDb ? 'rgba(244, 63, 94, 0.1)' : 'transparent',
+              opacity: canResetDb ? 1 : 0.5,
+              cursor: canResetDb ? 'pointer' : 'not-allowed',
             }}
             onClick={handleResetDatabase}
-            title="Completely clear all database records, citizens, cards, and transactions"
+            disabled={!canResetDb}
+            title={canResetDb ? "Completely clear all database records, citizens, cards, and transactions" : "Only Administrator can reset the database"}
           >
-            Clear DB
+            {canResetDb ? 'Clear DB' : 'Clear DB (Admin Only)'}
           </button>
         </div>
       </header>
@@ -1107,12 +1136,20 @@ export default function App(): React.ReactElement {
               <button
                 className="btn-primary"
                 onClick={handleDispenseGrain}
-                disabled={distLoading || !selectedCardId || distQuantity <= 0}
+                disabled={distLoading || !selectedCardId || distQuantity <= 0 || !canDispense}
+                style={{
+                  opacity: !canDispense ? 0.6 : 1,
+                  cursor: !canDispense ? 'not-allowed' : 'pointer',
+                  background: !canDispense ? '#475569' : undefined,
+                }}
+                title={!canDispense ? `${activeRole} cannot dispense grain (Requires Distribution Operator, Supervisor, or Admin)` : undefined}
               >
                 <Play size={16} />
                 <span>
                   {distLoading
                     ? 'Processing Authorization...'
+                    : !canDispense
+                    ? `Role Restricted (${activeRole === 'AUDITOR' ? 'Auditor: Read-Only' : 'Dispense Disabled'})`
                     : `Authorize & Dispense ${distQuantity}kg to ${activeBeneficiary?.full_name || 'Card'}`}
                 </span>
               </button>
@@ -1430,13 +1467,21 @@ export default function App(): React.ReactElement {
                                 display: 'inline-flex',
                                 alignItems: 'center',
                                 gap: '0.35rem',
-                                background: 'linear-gradient(135deg, #059669 0%, #10b981 100%)',
-                                boxShadow: '0 2px 8px rgba(16, 185, 129, 0.35)',
+                                background: canApproveRegistrations
+                                  ? 'linear-gradient(135deg, #059669 0%, #10b981 100%)'
+                                  : '#475569',
+                                boxShadow: canApproveRegistrations
+                                  ? '0 2px 8px rgba(16, 185, 129, 0.35)'
+                                  : 'none',
+                                cursor: canApproveRegistrations ? 'pointer' : 'not-allowed',
+                                opacity: canApproveRegistrations ? 1 : 0.6,
                               }}
-                              onClick={() => handleApproveRegistration(r.id)}
+                              onClick={() => canApproveRegistrations && handleApproveRegistration(r.id)}
+                              disabled={!canApproveRegistrations}
+                              title={canApproveRegistrations ? "Approve registration and activate card" : "Requires Supervisor or Administrator approval"}
                             >
                               <CheckCircle size={14} />
-                              Approve & Issue Card
+                              {canApproveRegistrations ? 'Approve & Issue Card' : 'Approval Restricted (Supervisor Only)'}
                             </button>
                           ) : (
                             <button
