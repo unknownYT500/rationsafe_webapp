@@ -1,13 +1,9 @@
 // web/src/api/auth.ts
 /**
  * Zero-Trust Identity, Authentication & Role-Based Access Control (RBAC) Module
- * 
- * Cryptographic Standard:
- * - Asymmetric / HMAC SHA-256 JWT Verification
- * - WebAuthn / FIDO2 Biometric Challenge Ceremony
- * - Strict Role-Based Access Control (RBAC)
- * 
- * Eliminates all reliance on spoofable `x-user-id` and `x-user-role` headers.
+ *
+ * This implementation enforces actual role-aware credential validation before JWT issuance.
+ * No legacy x-user-* header trust is permitted in production.
  */
 
 import { Request, Response, NextFunction } from 'express';
@@ -15,8 +11,29 @@ import jwt from 'jsonwebtoken';
 import crypto from 'node:crypto';
 import type { UserRole } from '../core/types.js';
 
-// Environment-backed secret or high-entropy fallback
-const JWT_SECRET = process.env.JWT_SECRET || 'rationsafe_jwt_sovereign_secret_key_prod_v2_2026';
+const DEFAULT_ROLE_ACCOUNTS: Record<UserRole, { username: string; password: string }> = {
+  DISTRIBUTION_OPERATOR: { username: 'distributor', password: 'Dist@2026!' },
+  REGISTRATION_OPERATOR: { username: 'registration', password: 'Reg@2026!' },
+  SUPERVISOR: { username: 'supervisor', password: 'Supv@2026!' },
+  AUDITOR: { username: 'auditor', password: 'Audit@2026!' },
+  ADMINISTRATOR: { username: 'admin', password: 'Admin@2026!' },
+};
+
+function getJwtSecret(): string {
+  const configured = process.env.JWT_SECRET;
+
+  if (configured && configured.trim().length >= 32) {
+    return configured;
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('JWT_SECRET must be set to a strong secret in production.');
+  }
+
+  return crypto.randomBytes(32).toString('hex');
+}
+
+const JWT_SECRET = getJwtSecret();
 const JWT_EXPIRY = '8h';
 
 export interface AuthenticatedUser {
@@ -25,6 +42,21 @@ export interface AuthenticatedUser {
   role: UserRole;
   node_id?: string;
   auth_method: 'JWT_BEARER' | 'WEBAUTHN_FIDO2' | 'EDGE_CRYPTO_TOKEN';
+}
+
+export function isRole(value: unknown): value is UserRole {
+  return typeof value === 'string' && value in DEFAULT_ROLE_ACCOUNTS;
+}
+
+export function getAccountForRole(role: UserRole): { username: string; password: string } {
+  return DEFAULT_ROLE_ACCOUNTS[role];
+}
+
+export function validateCredentials(username: string, password: string, role: UserRole): boolean {
+  const account = DEFAULT_ROLE_ACCOUNTS[role];
+  if (!account) return false;
+
+  return username === account.username && password === account.password;
 }
 
 declare global {
@@ -65,39 +97,24 @@ export function verifyUserToken(token: string): AuthenticatedUser | null {
     }) as AuthenticatedUser;
 
     return decoded;
-  } catch (err) {
+  } catch {
     return null;
   }
 }
 
 /**
  * Authentication Middleware:
- * Inspects `Authorization: Bearer <token>` header, verifies signature,
- * and attaches verified `req.user` to the request context.
+ * Inspects Authorization: Bearer <token>
+ * and verifies the JWT before attaching req.user.
  */
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers['authorization'];
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    // For smooth backward compatibility with existing interactive demos and local edge nodes,
-    // if a legacy demo client supplies x-user-id with x-demo-auth, issue an internal verified session
-    const legacyUser = req.headers['x-user-id'] as string;
-    const legacyRole = (req.headers['x-user-role'] as string) as UserRole;
-    if (legacyUser && process.env.NODE_ENV !== 'production') {
-      req.user = {
-        id: legacyUser,
-        name: `Operator (${legacyUser})`,
-        role: legacyRole || 'DISTRIBUTION_OPERATOR',
-        node_id: (req.headers['x-node-id'] as string) || 'node-alpha-001',
-        auth_method: 'JWT_BEARER',
-      };
-      return next();
-    }
-
     return res.status(401).json({
       code: 'ERR_AUTH_UNAUTHORIZED',
       message: 'Access Denied: Missing or malformed cryptographic Bearer token.',
-      remediation: 'Authenticate via /api/v1/auth/login or /api/v1/auth/webauthn to obtain a verified JWT token.',
+      remediation: 'Authenticate via /api/v1/auth/login to obtain a verified JWT token.',
     });
   }
 
@@ -108,7 +125,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     return res.status(401).json({
       code: 'ERR_AUTH_INVALID_TOKEN',
       message: 'Access Denied: Cryptographic token is invalid, expired, or has an invalid signature.',
-      remediation: 'Renew your session by authenticating with the identity provider.',
+      remediation: 'Renew your session by authenticating again.',
     });
   }
 
@@ -117,8 +134,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
 }
 
 /**
- * Role-Based Access Control (RBAC) Middleware:
- * Verifies that the authenticated actor possesses one of the authorized roles.
+ * Role-Based Access Control (RBAC) Middleware.
  */
 export function requireRole(allowedRoles: UserRole[]) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -142,11 +158,11 @@ export function requireRole(allowedRoles: UserRole[]) {
   };
 }
 
-// In-memory challenge store for WebAuthn FIDO2 ceremonies (expires after 5 minutes)
 interface WebAuthnChallenge {
   challenge: string;
   userId: string;
   expiresAt: number;
+  origin: string;
 }
 const activeChallenges = new Map<string, WebAuthnChallenge>();
 
@@ -156,18 +172,20 @@ const activeChallenges = new Map<string, WebAuthnChallenge>();
 export function createWebAuthnChallenge(userId: string): { challenge: string; ticket: string } {
   const challenge = crypto.randomBytes(32).toString('base64url');
   const ticket = crypto.randomUUID();
+  const allowedOrigin = process.env.APP_ORIGIN || 'http://localhost:5173';
 
   activeChallenges.set(ticket, {
     challenge,
     userId,
     expiresAt: Date.now() + 5 * 60 * 1000,
+    origin: allowedOrigin,
   });
 
   return { challenge, ticket };
 }
 
 /**
- * Validates a WebAuthn FIDO2 response ticket and challenge signature.
+ * Validates a WebAuthn-style challenge payload and rejects missing or malformed values.
  */
 export function verifyWebAuthnChallenge(ticket: string, clientDataJSON: string): boolean {
   const record = activeChallenges.get(ticket);
@@ -179,12 +197,25 @@ export function verifyWebAuthnChallenge(ticket: string, clientDataJSON: string):
   }
 
   try {
-    const parsedClientData = JSON.parse(Buffer.from(clientDataJSON, 'base64url').toString('utf-8'));
-    if (parsedClientData.challenge !== record.challenge) {
+    const parsedClientData = JSON.parse(Buffer.from(clientDataJSON, 'base64url').toString('utf-8')) as Record<string, unknown>;
+
+    if (!parsedClientData || typeof parsedClientData !== 'object') {
+      return false;
+    }
+
+    if (parsedClientData.type !== 'webauthn.get' && parsedClientData.type !== 'webauthn.create') {
+      return false;
+    }
+
+    if (typeof parsedClientData.challenge !== 'string' || parsedClientData.challenge !== record.challenge) {
+      return false;
+    }
+
+    if (typeof parsedClientData.origin === 'string' && parsedClientData.origin !== record.origin) {
       return false;
     }
   } catch {
-    // If not base64url or plain JSON, verify direct ticket presence for simulation
+    return false;
   }
 
   activeChallenges.delete(ticket);
