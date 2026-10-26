@@ -25,6 +25,9 @@ import {
   PlusCircle,
   Check,
   XCircle,
+  Menu,
+  X,
+  Sliders,
 } from 'lucide-react';
 import type { UserRole, TxnState, ReasonCode } from '../core/types.js';
 import { subscribeToGrainTrustUpdates, getSupabaseStatus, supabase, isSupabaseConfigured } from './supabase.js';
@@ -185,6 +188,23 @@ async function safeFetchJson<T = any>(
   }
 }
 
+function getRoleShortName(role: UserRole): string {
+  switch (role) {
+    case 'DISTRIBUTION_OPERATOR':
+      return 'Distribution';
+    case 'REGISTRATION_OPERATOR':
+      return 'Registration';
+    case 'SUPERVISOR':
+      return 'Supervisor';
+    case 'AUDITOR':
+      return 'Auditor';
+    case 'ADMINISTRATOR':
+      return 'Admin';
+    default:
+      return role;
+  }
+}
+
 export default function App(): React.ReactElement {
   const [activeTab, setActiveTab] = useState<
     'distribution' | 'registrations' | 'edge-sync' | 'inventory' | 'audit-trail'
@@ -193,6 +213,7 @@ export default function App(): React.ReactElement {
   const [isOnline, setIsOnline] = useState<boolean>(true);
   const [selectedNodeId, setSelectedNodeId] = useState<string>('node-alpha-001');
   const selectedNodeIdRef = useRef(selectedNodeId);
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState<boolean>(false);
 
   // Sync token whenever role changes
   useEffect(() => {
@@ -768,11 +789,12 @@ export default function App(): React.ReactElement {
           </div>
           <div>
             <div className="brand-title">GrainTrust</div>
-            <div className="brand-subtitle">Resilient Registration & Offline Grain Distribution Ledger</div>
+            <div className="brand-subtitle desktop-only">Resilient Registration & Offline Grain Distribution Ledger</div>
           </div>
         </div>
 
-        <div className="status-controls">
+        {/* Desktop Status Controls (Visible only on desktop screens) */}
+        <div className="status-controls desktop-only">
           {/* Storage & Database Engine Status Pill */}
           <div
             className="role-selector"
@@ -867,7 +889,215 @@ export default function App(): React.ReactElement {
             {canResetDb ? 'Clear DB' : 'Clear DB (Admin Only)'}
           </button>
         </div>
+
+        {/* Mobile Header Actions (Visible only on mobile/tablet screens) */}
+        <div className="mobile-header-actions mobile-only">
+          <button
+            type="button"
+            className="mobile-quick-pill"
+            onClick={() => setMobileDrawerOpen(true)}
+            title="Open system controls & terminal drawer"
+          >
+            <span className={`status-dot ${isOnline ? 'online' : 'offline'}`} />
+            <span className="mobile-role-text">{getRoleShortName(activeRole)}</span>
+          </button>
+
+          <button
+            type="button"
+            className="mobile-menu-toggle-btn"
+            onClick={() => setMobileDrawerOpen(true)}
+            aria-label="Open System Controls Menu"
+            title="Open System Controls & Terminal Settings"
+          >
+            <Menu size={20} />
+          </button>
+        </div>
       </header>
+
+      {/* Mobile Slide-Over System Controls Drawer & Backdrop */}
+      {mobileDrawerOpen && (
+        <div
+          className="mobile-drawer-backdrop"
+          onClick={() => setMobileDrawerOpen(false)}
+        />
+      )}
+
+      <aside className={`mobile-drawer ${mobileDrawerOpen ? 'open' : ''}`} aria-hidden={!mobileDrawerOpen}>
+        <div className="mobile-drawer-header">
+          <div className="mobile-drawer-title">
+            <Sliders size={18} color="var(--cyan-400)" />
+            <span>Terminal & System Controls</span>
+          </div>
+          <button
+            type="button"
+            className="mobile-drawer-close"
+            onClick={() => setMobileDrawerOpen(false)}
+            aria-label="Close Controls Drawer"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="mobile-drawer-content">
+          {/* Section 1: Active Role Persona */}
+          <div className="drawer-section">
+            <div className="drawer-section-title">
+              <UserCheck size={15} color="var(--cyan-400)" />
+              <span>Operator Persona (RBAC)</span>
+            </div>
+            <div className="drawer-card">
+              <select
+                className="drawer-select"
+                value={activeRole}
+                onChange={(e) => setActiveRole(e.target.value as UserRole)}
+              >
+                <option value="DISTRIBUTION_OPERATOR">Distribution Operator</option>
+                <option value="REGISTRATION_OPERATOR">Registration Operator</option>
+                <option value="SUPERVISOR">Field Supervisor</option>
+                <option value="AUDITOR">Auditor</option>
+                <option value="ADMINISTRATOR">Administrator</option>
+              </select>
+              <div className="drawer-role-desc">
+                {activeRole === 'DISTRIBUTION_OPERATOR' && '● POS Dispensing & Warehouse Stock'}
+                {activeRole === 'REGISTRATION_OPERATOR' && '● Citizen Intake & KYC Enrollment'}
+                {activeRole === 'SUPERVISOR' && '● Field Approvals, Override & Dispense'}
+                {activeRole === 'AUDITOR' && '● Read-Only Audit & Trace Oversight'}
+                {activeRole === 'ADMINISTRATOR' && '● Full Administration & Key Governance'}
+              </div>
+            </div>
+          </div>
+
+          {/* Section 2: Distribution Terminal & Network Mode */}
+          <div className="drawer-section">
+            <div className="drawer-section-title">
+              <Layers size={15} color="var(--amber-400)" />
+              <span>Active Terminal Node & Network</span>
+            </div>
+            <div className="drawer-card">
+              <label style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '0.3rem', display: 'block' }}>
+                Assigned Terminal Depot:
+              </label>
+              <select
+                className="drawer-select"
+                value={selectedNodeId || 'node-alpha-001'}
+                onChange={(e) => handleNodeChange(e.target.value)}
+              >
+                {(nodes.length > 0 ? nodes : getInitialSeedDatabase().nodes).map((n) => (
+                  <option key={n.id} value={n.id}>
+                    {n.name}
+                  </option>
+                ))}
+              </select>
+
+              <div style={{ marginTop: '0.75rem' }}>
+                <button
+                  type="button"
+                  className={`node-mode-toggle ${isOnline ? 'online' : 'offline'}`}
+                  style={{ width: '100%', justifyContent: 'center', padding: '0.6rem 1rem' }}
+                  onClick={handleToggleOnline}
+                >
+                  {isOnline ? <Wifi size={15} /> : <WifiOff size={15} />}
+                  <span>{isOnline ? 'Network: Online Central Mode' : 'Network: Offline (Edge Signed)'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Section 3: Navigation Workspaces */}
+          <div className="drawer-section">
+            <div className="drawer-section-title">
+              <Activity size={15} color="var(--emerald-400)" />
+              <span>Workspaces & Tabs</span>
+            </div>
+            <div className="drawer-nav-list">
+              <button
+                type="button"
+                className={`drawer-nav-btn ${activeTab === 'distribution' ? 'active' : ''}`}
+                onClick={() => { setActiveTab('distribution'); setMobileDrawerOpen(false); }}
+              >
+                <Activity size={16} />
+                <span>Grain Dispense Desk</span>
+              </button>
+              <button
+                type="button"
+                className={`drawer-nav-btn ${activeTab === 'registrations' ? 'active' : ''}`}
+                onClick={() => { setActiveTab('registrations'); setMobileDrawerOpen(false); }}
+              >
+                <Users size={16} />
+                <span>Beneficiary Cards ({cards.length})</span>
+              </button>
+              <button
+                type="button"
+                className={`drawer-nav-btn ${activeTab === 'edge-sync' ? 'active' : ''}`}
+                onClick={() => { setActiveTab('edge-sync'); setMobileDrawerOpen(false); }}
+              >
+                <RefreshCw size={16} />
+                <span>Edge Outbox & Central Sync</span>
+              </button>
+              <button
+                type="button"
+                className={`drawer-nav-btn ${activeTab === 'inventory' ? 'active' : ''}`}
+                onClick={() => { setActiveTab('inventory'); setMobileDrawerOpen(false); }}
+              >
+                <Wheat size={16} />
+                <span>Grain Stockpile</span>
+              </button>
+              <button
+                type="button"
+                className={`drawer-nav-btn ${activeTab === 'audit-trail' ? 'active' : ''}`}
+                onClick={() => { setActiveTab('audit-trail'); setMobileDrawerOpen(false); }}
+              >
+                <FileText size={16} />
+                <span>Audit Log & Verification</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Section 4: Security & Encryption Integrity */}
+          <div className="drawer-section">
+            <div className="drawer-section-title">
+              <Lock size={15} color="var(--emerald-400)" />
+              <span>Storage & Security Level</span>
+            </div>
+            <div className="drawer-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--emerald-400)', fontWeight: 700, fontSize: '0.82rem' }}>
+                <CheckCircle size={15} />
+                <span>IndexedDB (AES-GCM-256)</span>
+              </div>
+              <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                Citizen PII encrypted on device via WebCrypto SubtleCrypto. Zero-knowledge cryptographic proof generation.
+              </div>
+            </div>
+          </div>
+
+          {/* Section 5: Administration Reset */}
+          <div className="drawer-section" style={{ marginTop: 'auto', paddingTop: '0.75rem' }}>
+            <button
+              type="button"
+              className="btn-secondary"
+              style={{
+                width: '100%',
+                fontSize: '0.8rem',
+                padding: '0.6rem 1rem',
+                color: canResetDb ? 'var(--rose-400)' : 'var(--text-muted)',
+                borderColor: canResetDb ? 'rgba(244, 63, 94, 0.4)' : 'rgba(255, 255, 255, 0.1)',
+                background: canResetDb ? 'rgba(244, 63, 94, 0.1)' : 'transparent',
+                opacity: canResetDb ? 1 : 0.5,
+                cursor: canResetDb ? 'pointer' : 'not-allowed',
+                justifyContent: 'center',
+              }}
+              onClick={() => {
+                setMobileDrawerOpen(false);
+                handleResetDatabase();
+              }}
+              disabled={!canResetDb}
+            >
+              <Database size={15} />
+              <span>{canResetDb ? 'Clear Database (Seed Reset)' : 'Clear DB (Admin Only)'}</span>
+            </button>
+          </div>
+        </div>
+      </aside>
 
       {/* Offline Mode Warning Banner */}
       {!isOnline && (
@@ -1005,9 +1235,9 @@ export default function App(): React.ReactElement {
                 </div>
 
                 {/* Quick Card Switcher & Insert New Card Button */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                <div className="hero-actions-bar" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
                   <div
-                    className="role-selector"
+                    className="role-selector hero-card-selector"
                     style={{
                       background: '#090d16',
                       border: '1px solid var(--border-subtle)',
@@ -1021,6 +1251,7 @@ export default function App(): React.ReactElement {
                     <CreditCard size={15} color="var(--cyan-400)" />
                     <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Switch Card:</span>
                     <select
+                      className="hero-card-select"
                       value={selectedCardId || (cards[0]?.id ?? '')}
                       onChange={(e) => {
                         setSelectedCardId(e.target.value);
@@ -1028,7 +1259,6 @@ export default function App(): React.ReactElement {
                         setDistCurrentState('ATTEMPT');
                       }}
                       style={{
-                        minWidth: '240px',
                         cursor: 'pointer',
                         background: 'transparent',
                         color: 'var(--text-main)',
@@ -1047,7 +1277,7 @@ export default function App(): React.ReactElement {
                   </div>
 
                   <button
-                    className="btn-primary"
+                    className="btn-primary hero-insert-btn"
                     style={{ fontSize: '0.8rem', padding: '0.45rem 0.9rem' }}
                     onClick={() => {
                       handleDemoFill();
@@ -1352,7 +1582,7 @@ export default function App(): React.ReactElement {
               )}
 
               <form onSubmit={handleSubmitRegistration}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.85rem' }}>
+                <div className="form-row-2">
                   <div className="form-group">
                     <label className="form-label">First Name</label>
                     <input
@@ -1375,7 +1605,7 @@ export default function App(): React.ReactElement {
                   </div>
                 </div>
 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.85rem' }}>
+                <div className="form-row-2">
                   <div className="form-group">
                     <label className="form-label">Phone Number (+91...)</label>
                     <input
@@ -1398,7 +1628,7 @@ export default function App(): React.ReactElement {
                   </div>
                 </div>
 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.85rem' }}>
+                <div className="form-row-2">
                   <div className="form-group">
                     <label className="form-label">Family Size (10kg / member)</label>
                     <input
@@ -1433,7 +1663,7 @@ export default function App(): React.ReactElement {
                   />
                 </div>
 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.85rem' }}>
+                <div className="form-row-2">
                   <div className="form-group">
                     <label className="form-label">City</label>
                     <input
