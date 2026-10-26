@@ -237,6 +237,7 @@ export default function App(): React.ReactElement {
   // Core Data
   const [cards, setCards] = useState<CardBeneficiary[]>([]);
   const [selectedCardId, setSelectedCardId] = useState<string>('');
+  const selectedCardIdRef = useRef<string>('');
   const [lots, setLots] = useState<GrainLotItem[]>([]);
   const [nodes, setNodes] = useState<NodeItem[]>([]);
   const [registrations, setRegistrations] = useState<RegistrationItem[]>([]);
@@ -369,12 +370,13 @@ export default function App(): React.ReactElement {
       });
 
       setCards(finalCards);
-      if (preferredCardId && finalCards.some((c) => c.id === preferredCardId)) {
-        setSelectedCardId(preferredCardId);
-      } else if (selectedCardId && finalCards.some((c) => c.id === selectedCardId)) {
-        // Retain active card selection
+      const targetCardId = preferredCardId || selectedCardIdRef.current;
+      if (targetCardId && finalCards.some((c) => c.id === targetCardId)) {
+        setSelectedCardId(targetCardId);
+        selectedCardIdRef.current = targetCardId;
       } else if (finalCards.length > 0) {
         setSelectedCardId(finalCards[0].id);
+        selectedCardIdRef.current = finalCards[0].id;
       }
 
       setLots(finalLots);
@@ -528,6 +530,7 @@ export default function App(): React.ReactElement {
 
       if (res.ok && res.data) {
         const newCardId = res.data.card.id;
+        selectedCardIdRef.current = newCardId;
         await loadAllData(newCardId);
         setSelectedCardId(newCardId);
         setDistExecutionSummary(null);
@@ -543,6 +546,7 @@ export default function App(): React.ReactElement {
       } else {
         const approved = await verifyAndApproveRegistrationAsync(regId);
         if (approved) {
+          selectedCardIdRef.current = approved.card.id;
           await loadAllData(approved.card.id);
           setSelectedCardId(approved.card.id);
           setDistExecutionSummary(null);
@@ -560,6 +564,7 @@ export default function App(): React.ReactElement {
     } catch (e: any) {
       const approved = await verifyAndApproveRegistrationAsync(regId);
       if (approved) {
+        selectedCardIdRef.current = approved.card.id;
         await loadAllData(approved.card.id);
         setSelectedCardId(approved.card.id);
         setDistExecutionSummary(null);
@@ -772,6 +777,7 @@ export default function App(): React.ReactElement {
     }
     resetLocalDb();
     await initializeAndMigrateDatabase();
+    selectedCardIdRef.current = '';
     setSelectedCardId('');
     setDistExecutionSummary(null);
     setDistCurrentState('ATTEMPT');
@@ -1254,7 +1260,9 @@ export default function App(): React.ReactElement {
                       className="hero-card-select"
                       value={selectedCardId || (cards[0]?.id ?? '')}
                       onChange={(e) => {
-                        setSelectedCardId(e.target.value);
+                        const newId = e.target.value;
+                        selectedCardIdRef.current = newId;
+                        setSelectedCardId(newId);
                         setDistExecutionSummary(null);
                         setDistCurrentState('ATTEMPT');
                       }}
@@ -1787,6 +1795,7 @@ export default function App(): React.ReactElement {
                               }}
                               onClick={async () => {
                                 if (r.card_id) {
+                                  selectedCardIdRef.current = r.card_id;
                                   await loadAllData(r.card_id);
                                   setSelectedCardId(r.card_id);
                                   setDistExecutionSummary(null);

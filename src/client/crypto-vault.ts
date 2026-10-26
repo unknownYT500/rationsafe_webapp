@@ -10,12 +10,18 @@ const KEY_STORAGE_DB = 'RationSafe_KeyRing_v1';
 const KEY_STORE_NAME = 'master_keys';
 const MASTER_KEY_ID = 'rationsafe_device_pii_master_key_v1';
 
+let cachedMasterCryptoKey: CryptoKey | null = null;
+let masterKeyPromise: Promise<CryptoKey> | null = null;
+
 /**
  * Retrieves or securely generates a non-exportable AES-GCM 256-bit CryptoKey
  * stored inside IndexedDB using structured cloning (never stored as raw plaintext).
  */
 export async function getOrCreateMasterCryptoKey(): Promise<CryptoKey> {
-  return new Promise((resolve, reject) => {
+  if (cachedMasterCryptoKey) return cachedMasterCryptoKey;
+  if (masterKeyPromise) return masterKeyPromise;
+
+  masterKeyPromise = new Promise((resolve, reject) => {
     const request = indexedDB.open(KEY_STORAGE_DB, 1);
 
     request.onupgradeneeded = (event) => {
@@ -33,7 +39,8 @@ export async function getOrCreateMasterCryptoKey(): Promise<CryptoKey> {
 
       getReq.onsuccess = async () => {
         if (getReq.result) {
-          resolve(getReq.result as CryptoKey);
+          cachedMasterCryptoKey = getReq.result as CryptoKey;
+          resolve(cachedMasterCryptoKey);
         } else {
           try {
             const key = await window.crypto.subtle.generateKey(
@@ -49,19 +56,34 @@ export async function getOrCreateMasterCryptoKey(): Promise<CryptoKey> {
             const putStore = putTx.objectStore(KEY_STORE_NAME);
             putStore.put(key, MASTER_KEY_ID);
 
-            putTx.oncomplete = () => resolve(key);
-            putTx.onerror = () => reject(putTx.error);
+            putTx.oncomplete = () => {
+              cachedMasterCryptoKey = key;
+              resolve(key);
+            };
+            putTx.onerror = () => {
+              masterKeyPromise = null;
+              reject(putTx.error);
+            };
           } catch (err) {
+            masterKeyPromise = null;
             reject(err);
           }
         }
       };
 
-      getReq.onerror = () => reject(getReq.error);
+      getReq.onerror = () => {
+        masterKeyPromise = null;
+        reject(getReq.error);
+      };
     };
 
-    request.onerror = () => reject(request.error);
+    request.onerror = () => {
+      masterKeyPromise = null;
+      reject(request.error);
+    };
   });
+
+  return masterKeyPromise;
 }
 
 /**
