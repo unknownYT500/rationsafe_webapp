@@ -1,15 +1,9 @@
 // web/src/client/crypto-vault.ts
 /**
  * Web Cryptography API (SubtleCrypto) Engine for RationSafe
- * 
+ *
  * Provides production-grade AES-GCM 256-bit encryption/decryption at rest
  * for sensitive citizen Personally Identifiable Information (PII).
- * 
- * Cryptographic Standard:
- * - Cipher: AES-GCM (Galois/Counter Mode)
- * - Key Length: 256 bits
- * - Initialization Vector (IV): 96 bits (12 bytes) cryptographically random per operation
- * - Tag Length: 128 bits authentication tag (integrity guarantee against tampering)
  */
 
 const KEY_STORAGE_DB = 'RationSafe_KeyRing_v1';
@@ -41,14 +35,13 @@ export async function getOrCreateMasterCryptoKey(): Promise<CryptoKey> {
         if (getReq.result) {
           resolve(getReq.result as CryptoKey);
         } else {
-          // Generate fresh AES-GCM 256 key
           try {
             const key = await window.crypto.subtle.generateKey(
               {
                 name: 'AES-GCM',
                 length: 256,
               },
-              false, // extractable = false (prevent memory/script exfiltration)
+              false,
               ['encrypt', 'decrypt']
             );
 
@@ -93,16 +86,14 @@ export async function encryptPII(plaintext: string, key?: CryptoKey): Promise<st
       encoded
     );
 
-    // Combine IV (12 bytes) + Ciphertext + Tag
     const combined = new Uint8Array(iv.length + ciphertext.byteLength);
     combined.set(iv, 0);
     combined.set(new Uint8Array(ciphertext), iv.length);
 
-    // Convert to base64 with a distinctive prefix
     return 'enc:v1:' + btoa(String.fromCharCode(...combined));
   } catch (err) {
     console.error('[CryptoVault] Encryption failure:', err);
-    return plaintext; // Fallback to avoid catastrophic user lockout
+    return '[PII_REDACTED]';
   }
 }
 
@@ -112,7 +103,7 @@ export async function encryptPII(plaintext: string, key?: CryptoKey): Promise<st
  */
 export async function decryptPII(ciphertextWithIv: string, key?: CryptoKey): Promise<string> {
   if (!ciphertextWithIv || typeof ciphertextWithIv !== 'string' || !ciphertextWithIv.startsWith('enc:v1:')) {
-    return ciphertextWithIv; // Not encrypted or legacy plaintext
+    return ciphertextWithIv;
   }
 
   try {
