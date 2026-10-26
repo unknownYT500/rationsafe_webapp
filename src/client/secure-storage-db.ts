@@ -133,7 +133,11 @@ export async function initializeAndMigrateDatabase(): Promise<LocalDatabaseState
         sourceData = getInitialSeedDatabase();
       }
 
-      // Populate IndexedDB with encryption
+      // Pre-encrypt seed/migrated cards and registrations before entering Dexie transaction
+      const encryptedCards = await Promise.all(sourceData!.cards.map((c) => encryptCardPII(c)));
+      const encryptedRegs = await Promise.all(sourceData!.registrations.map((r) => encryptRegistrationPII(r)));
+
+      // Populate IndexedDB with pre-encrypted records
       await secureDb.transaction('rw', [
         secureDb.cards,
         secureDb.lots,
@@ -142,9 +146,9 @@ export async function initializeAndMigrateDatabase(): Promise<LocalDatabaseState
         secureDb.auditLogs,
         secureDb.metadata,
       ], async () => {
-        // Encrypt and insert cards
-        for (const card of sourceData!.cards) {
-          await secureDb.cards.put(await encryptCardPII(card));
+        // Insert encrypted cards
+        for (const card of encryptedCards) {
+          await secureDb.cards.put(card);
         }
 
         // Insert lots
@@ -157,9 +161,9 @@ export async function initializeAndMigrateDatabase(): Promise<LocalDatabaseState
           await secureDb.nodes.put(node);
         }
 
-        // Encrypt and insert registrations
-        for (const reg of sourceData!.registrations) {
-          await secureDb.registrations.put(await encryptRegistrationPII(reg));
+        // Insert encrypted registrations
+        for (const reg of encryptedRegs) {
+          await secureDb.registrations.put(reg);
         }
 
         // Insert audit logs
@@ -338,7 +342,7 @@ export async function recordDispenseAsync(
   quantity: number,
   isOnline: boolean
 ): Promise<{ state: LocalDatabaseState; card: CardBeneficiary; lot: GrainLotItem } | null> {
-  let updatedCard: CardBeneficiary | null = null;
+  let savedRawCard: CardBeneficiary | null = null;
   let updatedLot: GrainLotItem | null = null;
 
   await secureDb.transaction('rw', [
@@ -356,12 +360,12 @@ export async function recordDispenseAsync(
     rawCard.consumed_qty += quantity;
     rawCard.remaining_qty = Math.max(0, rawCard.remaining_qty - quantity);
     await secureDb.cards.put(rawCard);
-    updatedCard = await decryptCardPII(rawCard);
+    savedRawCard = { ...rawCard };
 
     // Update lot inventory
     lot.remaining_quantity = Math.max(0, lot.remaining_quantity - quantity);
     await secureDb.lots.put(lot);
-    updatedLot = lot;
+    updatedLot = { ...lot };
 
     // Update node outbox if offline
     if (!isOnline) {
@@ -383,7 +387,7 @@ export async function recordDispenseAsync(
     metrics.total_grain_disbursed += quantity;
     await secureDb.metadata.put({ key: 'metrics', value: metrics });
 
-    // Append Audit Log
+    // Append Audit Log (use rawCard.full_name directly to avoid WebCrypto call inside transaction)
     const now = new Date().toISOString();
     const auditItem: AuditLogItem = {
       id: `audit-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
@@ -394,7 +398,7 @@ export async function recordDispenseAsync(
       resource_type: 'distribution_transaction',
       resource_id: cardId,
       details: {
-        message: `${isOnline ? 'Online ledger' : 'Offline signed token'}: Dispensed ${quantity}kg of ${lot.grain_type} to ${updatedCard.full_name}.`,
+        message: `${isOnline ? 'Online ledger' : 'Offline signed token'}: Dispensed ${quantity}kg of ${lot.grain_type} to ${rawCard.full_name}.`,
         quantity,
         lot_id: lotId,
         security_level: 'ENCRYPTED_INDEXED_DB',
@@ -404,7 +408,10 @@ export async function recordDispenseAsync(
     await secureDb.auditLogs.put(auditItem);
   });
 
-  if (!updatedCard || !updatedLot) return null;
+  if (!savedRawCard || !updatedLot) return null;
+
+  // Decrypt PII outside the IndexedDB transaction boundary to prevent premature auto-commit
+  const updatedCard = await decryptCardPII(savedRawCard);
 
   const state = await getFullDecryptedState();
   return { state, card: updatedCard, lot: updatedLot };
@@ -514,8 +521,40 @@ export async function toggleNodeOnlineStatusAsync(nodeId: string): Promise<{ isO
 export async function verifyAndApproveRegistrationAsync(
   regId: string
 ): Promise<{ card: CardBeneficiary; reg: RegistrationItem; state: LocalDatabaseState } | null> {
-  let createdCard: CardBeneficiary | null = null;
-  let updatedReg: RegistrationItem | null = null;
+  const rawReg = await secureDb.registrations.get(regId);
+  if (!rawReg) return null;
+
+  // Decrypt registration PII outside transaction boundary
+  const decryptedReg = await decryptRegistrationPII(rawReg);
+  const cardId = `card-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
+  const now = new Date().toISOString();
+
+  decryptedReg.status = 'APPROVED';
+  decryptedReg.card_id = cardId;
+  decryptedReg.updated_at = now;
+
+  const quota = (decryptedReg.data.family_count || 3) * 10;
+  const newCard: CardBeneficiary = {
+    id: cardId,
+    person_id: decryptedReg.person_id || `person-${Date.now().toString(36)}`,
+    status: 'ACTIVE',
+    issued_at: now,
+    first_name: decryptedReg.data.first_name,
+    last_name: decryptedReg.data.last_name,
+    full_name: `${decryptedReg.data.first_name} ${decryptedReg.data.last_name}`,
+    phone_number: decryptedReg.data.phone_number,
+    family_count: decryptedReg.data.family_count,
+    address: decryptedReg.data.address,
+    city: decryptedReg.data.city,
+    state: decryptedReg.data.state,
+    allocated_qty: quota,
+    consumed_qty: 0,
+    remaining_qty: quota,
+  };
+
+  // Encrypt both records before entering Dexie transaction to prevent auto-commit
+  const encryptedReg = await encryptRegistrationPII(decryptedReg);
+  const encryptedCard = await encryptCardPII(newCard);
 
   await secureDb.transaction('rw', [
     secureDb.cards,
@@ -523,41 +562,8 @@ export async function verifyAndApproveRegistrationAsync(
     secureDb.auditLogs,
     secureDb.metadata,
   ], async () => {
-    const rawReg = await secureDb.registrations.get(regId);
-    if (!rawReg) return;
-
-    const cardId = `card-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
-    const now = new Date().toISOString();
-
-    rawReg.status = 'APPROVED';
-    rawReg.card_id = cardId;
-    rawReg.updated_at = now;
-    await secureDb.registrations.put(rawReg);
-    updatedReg = await decryptRegistrationPII(rawReg);
-
-    const quota = (updatedReg.data.family_count || 3) * 10;
-    const newCard: CardBeneficiary = {
-      id: cardId,
-      person_id: updatedReg.person_id || `person-${Date.now().toString(36)}`,
-      status: 'ACTIVE',
-      issued_at: now,
-      first_name: updatedReg.data.first_name,
-      last_name: updatedReg.data.last_name,
-      full_name: `${updatedReg.data.first_name} ${updatedReg.data.last_name}`,
-      phone_number: updatedReg.data.phone_number,
-      family_count: updatedReg.data.family_count,
-      address: updatedReg.data.address,
-      city: updatedReg.data.city,
-      state: updatedReg.data.state,
-      allocated_qty: quota,
-      consumed_qty: 0,
-      remaining_qty: quota,
-    };
-
-    // Encrypt and put new card
-    const encryptedCard = await encryptCardPII(newCard);
+    await secureDb.registrations.put(encryptedReg);
     await secureDb.cards.put(encryptedCard);
-    createdCard = newCard;
 
     // Update metrics
     const metricsRec = await secureDb.metadata.get('metrics');
@@ -582,9 +588,7 @@ export async function verifyAndApproveRegistrationAsync(
     });
   });
 
-  if (!createdCard || !updatedReg) return null;
-
   const state = await getFullDecryptedState();
-  return { card: createdCard, reg: updatedReg, state };
+  return { card: newCard, reg: decryptedReg, state };
 }
 

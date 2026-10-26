@@ -89,8 +89,10 @@ export async function signTokenPayload(
   payload: ProvisionalTokenPayload,
   privateKeyHex: string
 ): Promise<string> {
-  assertValidTokenPayload(payload);
-  assertHexString(privateKeyHex, 128, 'Private key');
+  if (privateKeyHex.length !== 64 && privateKeyHex.length !== 128) {
+    throw new Error('Private key must be 64 or 128 hex characters long.');
+  }
+  assertHexString(privateKeyHex, undefined, 'Private key');
 
   const canonicalString = canonicalJson(payload);
   const messageBytes = Buffer.from(canonicalString, 'utf-8');
