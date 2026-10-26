@@ -1,7 +1,7 @@
 // src/core/edge-guardian.ts
 /**
  * Edge Guardian AI Anomaly Detection Engine (TypeScript / Web Implementation)
- * 
+ *
  * Replicates and extends on-device edge heuristics for centralized server-side
  * and cloud node audit evaluation under the Adaption Labs AI framework.
  */
@@ -29,6 +29,17 @@ export interface DispenseAuditContext {
   actualCounter?: number;
 }
 
+function safeNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  return undefined;
+}
+
+function safeIsoDate(value: unknown): Date | null {
+  if (typeof value !== 'string' || value.trim().length === 0) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 export class EdgeGuardianEngine {
   /**
    * Evaluates a single dispense event against the 5-point Edge Guardian heuristic matrix:
@@ -39,56 +50,68 @@ export class EdgeGuardianEngine {
    * 5. Volumetric single-dispense spike (> 25 kg) -> +20
    */
   public evaluate(context: DispenseAuditContext): EdgeGuardianAssessment {
+    if (!context || typeof context !== 'object') {
+      return {
+        riskScore: 100,
+        riskLevel: 'CRITICAL',
+        flags: ['INVALID_CONTEXT'],
+        recommendedAction: 'BLOCK',
+        assessedAt: new Date().toISOString(),
+      };
+    }
+
     let score = 0;
     const flags: string[] = [];
 
-    const now = context.dispensedAt ? new Date(context.dispensedAt) : new Date();
+    const quantity = safeNumber(context.quantity);
+    if (quantity === undefined || quantity < 0) {
+      score += 50;
+      flags.push(`INVALID_QUANTITY (${String(context.quantity)})`);
+    }
 
-    // 1. Velocity Anomaly Heuristic
+    const now = safeIsoDate(context.dispensedAt) ?? new Date();
+
     if (context.previousDispenseTime) {
-      const prevTime = new Date(context.previousDispenseTime).getTime();
-      const currTime = now.getTime();
-      const diffSeconds = (currTime - prevTime) / 1000;
-      if (diffSeconds >= 0 && diffSeconds < 15) {
-        score += 35;
-        flags.push(`VELOCITY_VIOLATION (${diffSeconds.toFixed(1)}s < 15s threshold)`);
+      const prevTime = safeIsoDate(context.previousDispenseTime);
+      if (prevTime) {
+        const diffSeconds = (now.getTime() - prevTime.getTime()) / 1000;
+        if (diffSeconds >= 0 && diffSeconds < 15) {
+          score += 35;
+          flags.push(`VELOCITY_VIOLATION (${diffSeconds.toFixed(1)}s < 15s threshold)`);
+        }
       }
     }
 
-    // 2. High-frequency Burst Anomaly Heuristic
-    if (context.recentDispensesLastMinute !== undefined && context.recentDispensesLastMinute > 4) {
+    const recentDispenses = safeNumber(context.recentDispensesLastMinute);
+    if (recentDispenses !== undefined && recentDispenses > 4) {
       score += 30;
-      flags.push(`BURST_VELOCITY_SPIKE (${context.recentDispensesLastMinute} dispenses/min > 4)`);
+      flags.push(`BURST_VELOCITY_SPIKE (${recentDispenses} dispenses/min > 4)`);
     }
 
-    // 3. Off-hours Operation Heuristic (22:00 to 06:00)
     const hour = now.getHours();
     if (hour >= 22 || hour < 6) {
       score += 40;
       flags.push(`OFF_HOURS_DISPENSE (Operation at ${hour.toString().padStart(2, '0')}:00 hrs)`);
     }
 
-    // 4. Counter Discontinuity / Sequence Gap Heuristic
-    if (
-      context.actualCounter !== undefined &&
-      context.expectedCounter !== undefined &&
-      context.actualCounter > context.expectedCounter + 5
-    ) {
-      const gap = context.actualCounter - context.expectedCounter;
+    const expectedCounter = safeNumber(context.expectedCounter);
+    const actualCounter = safeNumber(context.actualCounter);
+    if (expectedCounter !== undefined && actualCounter !== undefined && actualCounter > expectedCounter + 5) {
+      const gap = actualCounter - expectedCounter;
       score += 25;
       flags.push(`COUNTER_GAP_DETECTED (Skipped ${gap} transactions)`);
     }
 
-    // 5. Volumetric Anomaly Heuristic
-    if (context.quantity <= 0) {
-      score += 50;
-      flags.push(`INVALID_NON_POSITIVE_QUANTITY (${context.quantity} kg)`);
-    } else if (context.quantity > 25.0) {
-      score += 20;
-      flags.push(`HIGH_VOLUMETRIC_DISPENSE (${context.quantity.toFixed(1)} kg > 25 kg)`);
+    if (quantity !== undefined) {
+      if (quantity <= 0) {
+        score += 50;
+        flags.push(`INVALID_NON_POSITIVE_QUANTITY (${quantity} kg)`);
+      } else if (quantity > 25.0) {
+        score += 20;
+        flags.push(`HIGH_VOLUMETRIC_DISPENSE (${quantity.toFixed(1)} kg > 25 kg)`);
+      }
     }
 
-    // Determine Risk Classification & Action
     let riskLevel: RiskLevel = 'LOW';
     let recommendedAction: GuardianAction = 'ALLOW';
 
@@ -150,3 +173,4 @@ export class EdgeGuardianEngine {
     };
   }
 }
+

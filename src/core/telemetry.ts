@@ -1,7 +1,7 @@
-// web/src/core/telemetry.ts
+// src/core/telemetry.ts
 /**
  * OpenTelemetry-Compatible Distributed Tracing Engine (TypeScript)
- * 
+ *
  * Implements the W3C Trace Context Specification (traceparent: 00-{trace_id}-{span_id}-{trace_flags})
  * for distributed end-to-end tracing across Mobile POS, Edge Nodes, Express Gateways, and Supabase RPCs.
  */
@@ -29,6 +29,10 @@ export interface SpanRecord {
   status: SpanStatus;
   error_message?: string;
   attributes: Record<string, unknown>;
+}
+
+function isHex(value: string, length: number): boolean {
+  return typeof value === 'string' && value.length === length && /^[0-9a-f]+$/i.test(value);
 }
 
 export class Span {
@@ -115,17 +119,20 @@ export class TelemetryEngine {
    * Parses an incoming W3C traceparent header string.
    */
   public static parseTraceparent(header?: string): TraceContext | null {
-    if (!header) return null;
-    const parts = header.trim().split('-');
+    if (typeof header !== 'string') return null;
+    const trimmed = header.trim();
+    const parts = trimmed.split('-');
     if (parts.length !== 4) return null;
-    if (parts[0] !== '00') return null; // version 00
-    if (parts[1].length !== 32 || parts[1] === '00000000000000000000000000000000') return null;
-    if (parts[2].length !== 16 || parts[2] === '0000000000000000') return null;
+    const [version, traceId, spanId, traceFlags] = parts;
+    if (version !== '00') return null;
+    if (!isHex(traceId, 32) || traceId === '00000000000000000000000000000000') return null;
+    if (!isHex(spanId, 16) || spanId === '0000000000000000') return null;
+    if (!isHex(traceFlags, 2)) return null;
     return {
-      version: parts[0],
-      traceId: parts[1],
-      spanId: parts[2],
-      traceFlags: parts[3],
+      version,
+      traceId,
+      spanId,
+      traceFlags,
     };
   }
 
@@ -186,8 +193,9 @@ export class TelemetryEngine {
       const result = await fn(span);
       span.end('OK');
       return result;
-    } catch (err: any) {
-      span.end('ERROR', err.message || String(err));
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      span.end('ERROR', message);
       throw err;
     }
   }
@@ -209,3 +217,4 @@ export class TelemetryEngine {
     this.currentContext = null;
   }
 }
+

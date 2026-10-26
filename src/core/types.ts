@@ -11,6 +11,18 @@ export type UserRole =
   | 'SECURITY_TESTER'
   | 'SYSTEM_OPERATOR';
 
+export const VALID_USER_ROLES: readonly UserRole[] = [
+  'BENEFICIARY',
+  'REGISTRATION_OPERATOR',
+  'DISTRIBUTION_OPERATOR',
+  'SUPERVISOR',
+  'ADMINISTRATOR',
+  'RECONCILIATION_OFFICER',
+  'AUDITOR',
+  'SECURITY_TESTER',
+  'SYSTEM_OPERATOR',
+];
+
 export type RegistrationStatus = 'DRAFT' | 'SUBMITTED' | 'VERIFIED' | 'APPROVED';
 
 export type CardStatus = 'ACTIVE' | 'SUSPENDED' | 'REVOKED';
@@ -21,6 +33,14 @@ export type TxnState =
   | 'FALLBACK_AUTH'
   | 'PROVISIONAL_ISSUE'
   | 'RECONCILED';
+
+export const VALID_TXN_STATES: readonly TxnState[] = [
+  'ATTEMPT',
+  'FAIL_REASON',
+  'FALLBACK_AUTH',
+  'PROVISIONAL_ISSUE',
+  'RECONCILED',
+];
 
 export type ReasonCode =
   | 'ERR_101' // Invalid field format
@@ -256,3 +276,61 @@ export interface EphemeralQrVerification {
   message: string;
   payload?: EphemeralQrPayload;
 }
+
+export function isValidUserRole(value: unknown): value is UserRole {
+  return typeof value === 'string' && VALID_USER_ROLES.includes(value as UserRole);
+}
+
+export function isValidTransactionState(value: unknown): value is TxnState {
+  return typeof value === 'string' && VALID_TXN_STATES.includes(value as TxnState);
+}
+
+export function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+export function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+export function normalizeIdentifier(value: unknown, fallback = 'unknown'): string {
+  if (typeof value !== 'string') return fallback;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : fallback;
+}
+
+export function normalizeDateString(value: unknown, fallback = new Date().toISOString()): string {
+  if (typeof value !== 'string' || value.trim().length === 0) return fallback;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? fallback : date.toISOString();
+}
+
+export function sanitizeCardId(value: unknown): string {
+  if (typeof value !== 'string') return 'UNKNOWN_CARD';
+  return value.trim().replace(/\s+/g, '');
+}
+
+export function sanitizeNodeId(value: unknown): string {
+  if (typeof value !== 'string') return 'UNKNOWN_NODE';
+  return value.trim().replace(/\s+/g, '');
+}
+
+export function sanitizeRole(value: unknown): UserRole | 'UNKNOWN' {
+  return isValidUserRole(value) ? value : 'UNKNOWN';
+}
+
+export function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(Math.max(value, min), max);
+}
+
+export function stringifyForLog(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value === null || value === undefined) return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return Object.prototype.toString.call(value);
+  }
+}
+

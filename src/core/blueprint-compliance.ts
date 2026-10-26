@@ -1,7 +1,7 @@
 // src/core/blueprint-compliance.ts
 /**
  * Blueprint Statutory Policy & Regulatory Compliance Engine (TypeScript)
- * 
+ *
  * Implements National Food Security Act (NFSA 2013) statutory rules, entitlement caps,
  * and zero-leakage PII cryptographic masking for central and edge nodes.
  */
@@ -26,6 +26,10 @@ export interface BeneficiaryPolicyProfile {
   aadhaarNumber?: string;
 }
 
+function isCardCategory(value: unknown): value is CardCategory {
+  return value === 'PHH' || value === 'AAY' || value === 'AY' || value === 'GEN';
+}
+
 export class BlueprintComplianceEngine {
   /**
    * National Food Security Act (NFSA 2013) Statutory Rules:
@@ -35,7 +39,11 @@ export class BlueprintComplianceEngine {
    * 4. GEN (General State / APL): 15.0 kg default baseline
    */
   public static calculateStatutoryEntitlement(category: CardCategory, familyCount: number): number {
-    const validMembers = familyCount > 0 ? familyCount : 1;
+    if (!isCardCategory(category)) {
+      return 15.0;
+    }
+
+    const validMembers = Number.isFinite(familyCount) && familyCount > 0 ? Math.max(1, Math.floor(familyCount)) : 1;
     switch (category) {
       case 'PHH':
         return validMembers * 5.0;
@@ -57,20 +65,45 @@ export class BlueprintComplianceEngine {
     profile: BeneficiaryPolicyProfile,
     requestedQuantity: number
   ): BlueprintComplianceResult {
-    const piiMasked = this.maskIdentifier(profile.cardId);
-
-    if (requestedQuantity <= 0) {
+    if (!profile || typeof profile !== 'object') {
       return {
         isCompliant: false,
         maxPermissibleQuota: 0,
         remainingQuota: 0,
-        violationReason: 'Requested quantity must be strictly greater than zero.',
+        violationReason: 'Invalid beneficiary profile.',
+        piiMaskedCardId: 'INVALID_PROFILE',
+      };
+    }
+
+    const cardId = typeof profile.cardId === 'string' ? profile.cardId.trim() : '';
+    const piiMasked = this.maskIdentifier(cardId || 'unknown-card');
+
+    if (!Number.isFinite(requestedQuantity) || requestedQuantity <= 0) {
+      return {
+        isCompliant: false,
+        maxPermissibleQuota: 0,
+        remainingQuota: 0,
+        violationReason: 'Requested quantity must be a finite number greater than zero.',
         piiMaskedCardId: piiMasked,
       };
     }
 
-    const statutoryCap = this.calculateStatutoryEntitlement(profile.category, profile.familyCount);
-    const availableQuota = Math.max(0, statutoryCap - profile.monthlyQuotaConsumed);
+    const category = profile.category;
+    if (!isCardCategory(category)) {
+      return {
+        isCompliant: false,
+        maxPermissibleQuota: 0,
+        remainingQuota: 0,
+        violationReason: 'Unknown beneficiary category; policy validation failed.',
+        piiMaskedCardId: piiMasked,
+      };
+    }
+
+    const familyCount = Number.isFinite(profile.familyCount) ? Math.max(1, Math.floor(profile.familyCount)) : 1;
+    const monthlyQuotaConsumed = Number.isFinite(profile.monthlyQuotaConsumed) ? profile.monthlyQuotaConsumed : 0;
+
+    const statutoryCap = this.calculateStatutoryEntitlement(category, familyCount);
+    const availableQuota = Math.max(0, statutoryCap - monthlyQuotaConsumed);
 
     if (requestedQuantity > availableQuota) {
       return {
@@ -82,13 +115,12 @@ export class BlueprintComplianceEngine {
       };
     }
 
-    // Single-transaction safety ceiling
     if (requestedQuantity > 35.0) {
       return {
         isCompliant: false,
         maxPermissibleQuota: statutoryCap,
         remainingQuota: availableQuota,
-        violationReason: `Single dispense exceeds regulatory safety ceiling (35.0 kg max per transaction).`,
+        violationReason: 'Single dispense exceeds regulatory safety ceiling (35.0 kg max per transaction).',
         piiMaskedCardId: piiMasked,
       };
     }
@@ -105,7 +137,11 @@ export class BlueprintComplianceEngine {
    * Irreversible cryptographic identifier pseudonymization using SHA-256
    */
   public static maskIdentifier(plainCardId: string): string {
-    const hash = crypto.createHash('sha256').update(plainCardId.trim()).digest('hex');
+    const value = typeof plainCardId === 'string' ? plainCardId.trim() : '';
+    if (!value) {
+      return 'INVALID_CARD';
+    }
+    const hash = crypto.createHash('sha256').update(value).digest('hex');
     return hash.slice(0, 16);
   }
 
@@ -113,9 +149,10 @@ export class BlueprintComplianceEngine {
    * Masks a 12-digit Aadhaar number into standard compliant masked format: XXXX-XXXX-1234
    */
   public static maskAadhaar(aadhaar: string): string {
-    const clean = aadhaar.replace(/\D/g, '');
+    const clean = typeof aadhaar === 'string' ? aadhaar.replace(/\D/g, '') : '';
     if (clean.length < 4) return 'XXXX-XXXX-XXXX';
     const last4 = clean.slice(-4);
     return `XXXX-XXXX-${last4}`;
   }
 }
+

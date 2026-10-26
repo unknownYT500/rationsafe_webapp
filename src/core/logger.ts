@@ -1,7 +1,7 @@
 // web/src/core/logger.ts
 /**
  * PII-Scrubbed Structured Logger (TypeScript / Node.js)
- * 
+ *
  * Provides Winston/Pino-compatible structured JSON logging with automated recursive
  * scrubbing of citizen Aadhaar numbers, phone numbers, beneficiary names, and private keys.
  * Integrated with W3C OpenTelemetry distributed tracing context.
@@ -23,13 +23,17 @@ export interface LogEntry {
   error?: string;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Object.prototype.toString.call(value) === '[object Object]';
+}
+
 export class StructuredLogger {
   private serviceName: string;
   private static inMemoryLogs: LogEntry[] = [];
   public static enableConsoleOutput = false; // Silence raw console in automated tests
 
   constructor(serviceName = 'central_gateway') {
-    this.serviceName = serviceName;
+    this.serviceName = typeof serviceName === 'string' && serviceName.trim().length > 0 ? serviceName : 'central_gateway';
   }
 
   private static aadhaarRegex = /\b(?:\d{4}[ -]?\d{4}[ -]?\d{4})\b/g;
@@ -48,6 +52,10 @@ export class StructuredLogger {
     'signature',
     'password',
     'pin',
+    'token',
+    'aadhaar',
+    'phone',
+    'identity',
   ];
 
   /**
@@ -60,6 +68,10 @@ export class StructuredLogger {
       return this.scrubText(data) as unknown as T;
     }
 
+    if (data instanceof Date) {
+      return data.toISOString() as unknown as T;
+    }
+
     if (Array.isArray(data)) {
       return data.map((item) => this.scrubPii(item)) as unknown as T;
     }
@@ -70,7 +82,7 @@ export class StructuredLogger {
         const lowerKey = key.toLowerCase();
 
         if (this.sensitiveKeyPatterns.some((pattern) => lowerKey.includes(pattern))) {
-          if (lowerKey.includes('private') || lowerKey.includes('secret') || lowerKey.includes('key')) {
+          if (lowerKey.includes('private') || lowerKey.includes('secret') || lowerKey.includes('key') || lowerKey.includes('token')) {
             scrubbed[key] = '[REDACTED_SECRET]';
           } else {
             scrubbed[key] = '[REDACTED_PII]';
@@ -81,6 +93,8 @@ export class StructuredLogger {
           scrubbed[key] = this.maskPhone(String(value ?? ''));
         } else if (lowerKey.includes('card') && typeof value === 'string') {
           scrubbed[key] = value.length > 8 ? `${value.slice(0, 4)}...${value.slice(-4)}` : value;
+        } else if (typeof value === 'number' && !Number.isFinite(value)) {
+          scrubbed[key] = '[INVALID_NUMBER]';
         } else {
           scrubbed[key] = this.scrubPii(value);
         }
@@ -93,7 +107,6 @@ export class StructuredLogger {
 
   public static scrubText(text: string): string {
     let result = text;
-    // Mask Aadhaar numbers
     result = result.replace(this.aadhaarRegex, (match) => {
       const clean = match.replace(/\D/g, '');
       if (clean.length === 12) {
@@ -102,7 +115,6 @@ export class StructuredLogger {
       return match;
     });
 
-    // Mask Indian phone numbers
     result = result.replace(this.phoneRegex, (match) => {
       const clean = match.replace(/\D/g, '');
       if (clean.length >= 10) {
@@ -132,16 +144,17 @@ export class StructuredLogger {
 
   private writeLog(level: LogLevel, message: string, data?: Record<string, unknown>, error?: unknown): LogEntry {
     const activeCtx = TelemetryEngine.getActiveContext();
+    const safeMessage = typeof message === 'string' ? StructuredLogger.scrubText(message) : 'log_message_missing';
 
     const entry: LogEntry = {
       timestamp: new Date().toISOString(),
       service: this.serviceName,
       level,
-      message: StructuredLogger.scrubText(message),
+      message: safeMessage,
       trace_id: activeCtx?.traceId,
       span_id: activeCtx?.spanId,
       traceparent: activeCtx ? TelemetryEngine.formatTraceparent(activeCtx) : undefined,
-      data: data ? StructuredLogger.scrubPii(data) : undefined,
+      data: data && isPlainObject(data) ? StructuredLogger.scrubPii(data) : undefined,
       error: error ? StructuredLogger.scrubText(error instanceof Error ? error.message : String(error)) : undefined,
     };
 
@@ -182,3 +195,4 @@ export class StructuredLogger {
     this.inMemoryLogs = [];
   }
 }
+

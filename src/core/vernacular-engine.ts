@@ -1,7 +1,7 @@
 // src/core/vernacular-engine.ts
 /**
  * Vernacular Voice & Grievance Engine (TypeScript / Web Implementation)
- * 
+ *
  * Provides multilingual natural language intent parsing across 242 regional dialects
  * (Hindi, Bhojpuri, Telugu, Tamil, Marathi, Bengali, Kannada, English) and generates
  * tamper-resistant offline citizen grievance tickets.
@@ -43,18 +43,34 @@ export interface GrievanceTicket {
   registeredAt: string;
 }
 
+const VALID_LANG_CODES = new Set(['hi', 'bho', 'te', 'ta', 'mr', 'bn', 'kn', 'en', 'und']);
+
 export class VernacularEngine {
   private grievances: GrievanceTicket[] = [];
+
+  private normalizeLanguage(langCode?: string): string {
+    const value = typeof langCode === 'string' ? langCode.trim().toLowerCase() : 'und';
+    return VALID_LANG_CODES.has(value) ? value : 'und';
+  }
 
   /**
    * Evaluates citizen audio transcript / text utterance across 242 dialects
    * into standardized operational intents.
    */
   public parseUtterance(utterance: string, langCode: string = 'hi'): VernacularIntent {
-    const text = utterance.toLowerCase().trim();
-    const detectedLang = langCode.toLowerCase();
+    const text = typeof utterance === 'string' ? utterance.toLowerCase().trim() : '';
+    const detectedLang = this.normalizeLanguage(langCode);
 
-    // 1. Quota / Balance Inquiry Keywords
+    if (!text) {
+      return {
+        type: 'UNKNOWN',
+        confidence: 0.0,
+        extractedSlots: {},
+        rawUtterance: typeof utterance === 'string' ? utterance : '',
+        detectedLanguage: detectedLang,
+      };
+    }
+
     const quotaKeywords = [
       'quota', 'balance', 'kitna', 'bacha', 'baki', 'chawal', 'gehun', 'anaaj',
       'entitlement', 'share', 'remaining', 'bhojan', 'rashan kitna', 'miqdar',
@@ -70,7 +86,6 @@ export class VernacularEngine {
       };
     }
 
-    // 2. Schedule / Distribution Dates Inquiry
     const scheduleKeywords = [
       'kab', 'aayega', 'date', 'samay', 'open', 'timing', 'dukaan kab',
       'schedule', 'when', 'vachindi', 'eppudu', 'eppo', 'kobe', 'yavaga',
@@ -86,7 +101,6 @@ export class VernacularEngine {
       };
     }
 
-    // 3. Grievance / Fraud / Complaint Reporting
     const grievanceKeywords = [
       'shikayat', 'complaint', 'kam diya', 'paisa manga', 'extra paisa',
       'chori', 'bandh tha', 'kharab', 'sadha', 'dhandhli', 'loot', 'fraud',
@@ -104,7 +118,6 @@ export class VernacularEngine {
       };
     }
 
-    // 4. Family Member Entitlement Inquiry
     const familyKeywords = [
       'member', 'parivar', 'sadasya', 'naam', 'aadhaar link', 'family',
       'kutumba', 'kudumbam', 'poribar', 'valla perlu', 'members count'
@@ -119,7 +132,6 @@ export class VernacularEngine {
       };
     }
 
-    // Default Unknown
     return {
       type: 'UNKNOWN',
       confidence: 0.35,
@@ -133,16 +145,18 @@ export class VernacularEngine {
    * Maps natural language complaint text into categorical grievance codes
    */
   public categorizeComplaint(text: string): GrievanceCategory {
-    if (text.includes('kam') || text.includes('short') || text.includes('weight') || text.includes('thakkuva') || text.includes('kadime')) {
+    if (typeof text !== 'string') return 'OTHER';
+    const normalized = text.toLowerCase();
+    if (normalized.includes('kam') || normalized.includes('short') || normalized.includes('weight') || normalized.includes('thakkuva') || normalized.includes('kadime')) {
       return 'UNDER_WEIGHING';
     }
-    if (text.includes('paisa') || text.includes('overcharge') || text.includes('extra') || text.includes('rupees') || text.includes('panam')) {
+    if (normalized.includes('paisa') || normalized.includes('overcharge') || normalized.includes('extra') || normalized.includes('rupees') || normalized.includes('panam')) {
       return 'OVERCHARGING';
     }
-    if (text.includes('bandh') || text.includes('closed') || text.includes('moodi')) {
+    if (normalized.includes('bandh') || normalized.includes('closed') || normalized.includes('moodi')) {
       return 'SHOP_CLOSED';
     }
-    if (text.includes('kharab') || text.includes('sadha') || text.includes('quality') || text.includes('keeda')) {
+    if (normalized.includes('kharab') || normalized.includes('sadha') || normalized.includes('quality') || normalized.includes('keeda')) {
       return 'POOR_QUALITY';
     }
     return 'OTHER';
@@ -160,9 +174,13 @@ export class VernacularEngine {
       grievanceTicketId?: string;
     }
   ): string {
-    const lang = intent.detectedLanguage.toLowerCase();
-    const quota = context.remainingQuotaKg !== undefined ? context.remainingQuotaKg.toFixed(1) : '15.0';
-    const members = context.familyCount ?? 4;
+    if (!intent || typeof intent !== 'object') {
+      return 'Please state your query clearly, such as "What is my remaining quota?" or "Report an issue".';
+    }
+
+    const lang = this.normalizeLanguage(intent.detectedLanguage);
+    const quota = Number.isFinite(context.remainingQuotaKg) ? context.remainingQuotaKg!.toFixed(1) : '15.0';
+    const members = Number.isFinite(context.familyCount) ? Math.max(1, Math.floor(context.familyCount!)) : 4;
     const ticket = context.grievanceTicketId ?? 'GRV-PENDING';
 
     switch (intent.type) {
@@ -218,16 +236,26 @@ export class VernacularEngine {
     category: GrievanceCategory,
     complaintText: string
   ): GrievanceTicket {
+    if (typeof cardId !== 'string' || cardId.trim().length === 0) {
+      throw new Error('Card ID is required to register a grievance.');
+    }
+    if (typeof nodeId !== 'string' || nodeId.trim().length === 0) {
+      throw new Error('Node ID is required to register a grievance.');
+    }
+    if (typeof complaintText !== 'string' || complaintText.trim().length === 0) {
+      throw new Error('Complaint text is required.');
+    }
+
     const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const rand = Math.floor(1000 + Math.random() * 9000);
     const ticketId = `GRV-${today}-${rand}`;
 
     const ticket: GrievanceTicket = {
       ticketId,
-      cardId,
-      nodeId,
-      category,
-      complaintText,
+      cardId: cardId.trim(),
+      nodeId: nodeId.trim(),
+      category: category || 'OTHER',
+      complaintText: complaintText.trim(),
       status: 'PENDING',
       registeredAt: new Date().toISOString(),
     };
@@ -240,3 +268,4 @@ export class VernacularEngine {
     return [...this.grievances];
   }
 }
+

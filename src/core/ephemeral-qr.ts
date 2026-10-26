@@ -1,4 +1,4 @@
-// web/src/core/ephemeral-qr.ts
+// src/core/ephemeral-qr.ts
 /**
  * Dynamic Ephemeral QR Code Verification & Anti-Replay Engine
  * Enforces a 180-second TTL and monotonic nonces to prevent photo duplication and replay fraud.
@@ -8,9 +8,23 @@ import crypto from 'node:crypto';
 import type { EphemeralQrPayload, EphemeralQrVerification } from './types.js';
 
 const DEFAULT_SHARED_SECRET = process.env.EPHEMERAL_QR_SECRET || 'rationsafe_ephemeral_qr_pds_secret_2026';
-
-// In-memory sliding-window replay filter mapping seen nonce -> expiration epoch timestamp
 const seenNonces = new Map<string, number>();
+
+function isValidHex(value: unknown, length?: number): value is string {
+  return typeof value === 'string' && (!length || value.length === length) && /^[0-9a-f]+$/i.test(value);
+}
+
+function isValidPayloadCandidate(value: unknown): value is Partial<EphemeralQrPayload> {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    candidate.v === 1 &&
+    typeof candidate.cid === 'string' && candidate.cid.trim().length > 0 &&
+    typeof candidate.sub === 'string' && candidate.sub.trim().length > 0 &&
+    typeof candidate.nonce === 'string' && candidate.nonce.trim().length > 0 &&
+    typeof candidate.sig === 'string' && candidate.sig.trim().length > 0
+  );
+}
 
 /**
  * Builds the canonical string representation for cryptographic hashing.
@@ -29,13 +43,13 @@ export function generateEphemeralQrToken(
   secret = DEFAULT_SHARED_SECRET
 ): EphemeralQrPayload {
   const now = Math.floor(Date.now() / 1000);
-  const exp = now + ttlSeconds;
+  const exp = now + Math.max(30, ttlSeconds);
   const nonce = crypto.randomBytes(16).toString('hex');
 
   const unsigned: Omit<EphemeralQrPayload, 'sig'> = {
     v: 1,
-    cid: cardId,
-    sub: subjectHash,
+    cid: typeof cardId === 'string' ? cardId.trim() : 'UNKNOWN_CARD',
+    sub: typeof subjectHash === 'string' ? subjectHash.trim() : 'UNKNOWN_SUBJECT',
     ts: now,
     exp,
     nonce,
@@ -65,7 +79,7 @@ export function verifyEphemeralQrToken(
   allowedClockSkewSeconds = 30,
   secret = DEFAULT_SHARED_SECRET
 ): EphemeralQrVerification {
-  let parsed: any;
+  let parsed: unknown;
   try {
     parsed = typeof rawQrString === 'string' ? JSON.parse(rawQrString) : rawQrString;
   } catch {
@@ -76,7 +90,7 @@ export function verifyEphemeralQrToken(
     };
   }
 
-  if (!parsed || parsed.v !== 1 || !parsed.cid || !parsed.nonce || !parsed.sig) {
+  if (!isValidPayloadCandidate(parsed)) {
     return {
       isValid: false,
       code: 'ERR_QR_MALFORMED',
@@ -87,7 +101,24 @@ export function verifyEphemeralQrToken(
   const payload = parsed as EphemeralQrPayload;
   const now = Math.floor(Date.now() / 1000);
 
-  // 1. Expiration Verification
+  if (typeof payload.ts !== 'number' || !Number.isFinite(payload.ts)) {
+    return {
+      isValid: false,
+      code: 'ERR_QR_MALFORMED',
+      message: 'QR token timestamp is invalid.',
+      payload,
+    };
+  }
+
+  if (!isValidHex(payload.sig, 64)) {
+    return {
+      isValid: false,
+      code: 'ERR_QR_INVALID_SIGNATURE',
+      message: 'Cryptographic validation failed: Ephemeral QR signature is invalid or tampered.',
+      payload,
+    };
+  }
+
   if (now > payload.exp + allowedClockSkewSeconds) {
     return {
       isValid: false,
@@ -97,7 +128,6 @@ export function verifyEphemeralQrToken(
     };
   }
 
-  // 2. Future Clock Skew Check
   if (payload.ts > now + allowedClockSkewSeconds) {
     return {
       isValid: false,
@@ -107,10 +137,8 @@ export function verifyEphemeralQrToken(
     };
   }
 
-  // 3. Prune expired nonces from sliding-window cache
   pruneExpiredNonces(now);
 
-  // 4. Anti-Replay Nonce Verification
   if (seenNonces.has(payload.nonce)) {
     return {
       isValid: false,
@@ -120,7 +148,6 @@ export function verifyEphemeralQrToken(
     };
   }
 
-  // 5. Cryptographic HMAC Signature Verification
   const canonical = toCanonicalString(payload);
   const hmac = crypto.createHmac('sha256', secret);
   hmac.update(canonical);
@@ -138,7 +165,6 @@ export function verifyEphemeralQrToken(
     };
   }
 
-  // 6. Record nonce in replay filter until token expiration
   seenNonces.set(payload.nonce, payload.exp);
 
   return {
@@ -166,3 +192,4 @@ function pruneExpiredNonces(currentEpochSeconds: number): void {
 export function clearEphemeralReplayCache(): void {
   seenNonces.clear();
 }
+
