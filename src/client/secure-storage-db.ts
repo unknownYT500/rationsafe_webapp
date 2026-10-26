@@ -268,6 +268,21 @@ export async function getFullDecryptedState(): Promise<LocalDatabaseState> {
     Promise.all(encryptedRegs.map(decryptRegistrationPII)),
   ]);
 
+  // Self-heal seed beneficiaries if previous session key mismatch occurred
+  const seedDb = getInitialSeedDatabase();
+  for (const card of cards) {
+    if (card.phone_number === '[ENCRYPTED_PII]' || card.address === '[ENCRYPTED_PII]') {
+      const match = seedDb.cards.find((sc) => sc.id === card.id);
+      if (match) {
+        card.phone_number = match.phone_number;
+        card.address = match.address;
+        try {
+          await secureDb.cards.put(await encryptCardPII(card));
+        } catch {}
+      }
+    }
+  }
+
   // Reconcile approved registrations: Ensure any approved citizen with a card_id exists in cards
   for (const reg of registrations) {
     if (reg.status === 'APPROVED' && reg.card_id && !cards.some((c) => c.id === reg.card_id)) {
