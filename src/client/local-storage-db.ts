@@ -2,7 +2,7 @@
 /**
  * Autonomous Client-Side JSON Database Engine for RationSafe
  * Provides persistent offline-first storage in browser localStorage.
- * Operates with 100% reliability with zero server or cloud database dependencies.
+ * This fallback is sanitized to avoid storing plaintext PII.
  */
 
 export interface CardBeneficiary {
@@ -89,6 +89,63 @@ export interface LocalDatabaseState {
 }
 
 const STORAGE_KEY = 'rationsafe_json_store_v1';
+
+function redactString(value: string): string {
+  if (!value) return value;
+  return value.length <= 2 ? '[REDACTED]' : '[REDACTED]';
+}
+
+function sanitizeAuditDetails(details: AuditLogItem['details']): AuditLogItem['details'] {
+  if (typeof details === 'string') {
+    return '[REDACTED]';
+  }
+  if (!details || typeof details !== 'object') {
+    return { message: '[REDACTED]' };
+  }
+
+  const clone = { ...(details as Record<string, unknown>) };
+  for (const key of Object.keys(clone)) {
+    const val = clone[key];
+    if (typeof val === 'string') {
+      clone[key] = '[REDACTED]';
+    }
+  }
+  return clone;
+}
+
+export function sanitizeForStorage(state: LocalDatabaseState): LocalDatabaseState {
+  return {
+    ...state,
+    cards: state.cards.map((card) => ({
+      ...card,
+      first_name: redactString(card.first_name),
+      last_name: redactString(card.last_name),
+      full_name: redactString(card.full_name),
+      phone_number: redactString(card.phone_number),
+      address: redactString(card.address),
+      city: redactString(card.city),
+      state: redactString(card.state),
+    })),
+    registrations: state.registrations.map((reg) => ({
+      ...reg,
+      data: {
+        ...reg.data,
+        first_name: redactString(reg.data.first_name),
+        last_name: redactString(reg.data.last_name),
+        phone_number: redactString(reg.data.phone_number),
+        address: redactString(reg.data.address),
+        city: redactString(reg.data.city),
+        state: redactString(reg.data.state),
+      },
+    })),
+    auditLogs: state.auditLogs.map((log) => ({
+      ...log,
+      actor_id: redactString(log.actor_id),
+      resource_id: redactString(log.resource_id),
+      details: sanitizeAuditDetails(log.details),
+    })),
+  };
+}
 
 export function getInitialSeedDatabase(): LocalDatabaseState {
   const cards: CardBeneficiary[] = [
@@ -256,11 +313,7 @@ export function loadDatabase(): LocalDatabaseState {
             lots: parsed.lots || [],
             nodes: (parsed.nodes || []).map((n: any, idx: number) => ({
               ...n,
-              public_key:
-                n.public_key ||
-                (idx === 0
-                  ? 'ed25519_pub_alpha_8f9a2b1c3d4e5f60718293a4b5c6d7e8'
-                  : 'ed25519_pub_beta_1a2b3c4d5e6f708192a3b4c5d6e7f8a9'),
+              public_key: n.public_key || (idx === 0 ? 'ed25519_pub_alpha_8f9a2b1c3d4e5f60718293a4b5c6d7e8' : 'ed25519_pub_beta_1a2b3c4d5e6f708192a3b4c5d6e7f8a9'),
               last_heartbeat: n.last_heartbeat || new Date().toISOString(),
               location: n.location || 'Depot',
             })),
@@ -273,10 +326,7 @@ export function loadDatabase(): LocalDatabaseState {
               ...l,
               action: l.action || l.event_type || 'SYSTEM_EVENT',
               resource_type: l.resource_type || 'system',
-              details:
-                typeof l.details === 'object' && l.details !== null
-                  ? l.details
-                  : { message: String(l.details || '') },
+              details: typeof l.details === 'object' && l.details !== null ? l.details : { message: String(l.details || '') },
             })),
             metrics: parsed.metrics || {
               active_cards: (parsed.cards || []).length,
@@ -300,7 +350,8 @@ export function loadDatabase(): LocalDatabaseState {
 export function saveDatabase(state: LocalDatabaseState): void {
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      const sanitized = sanitizeForStorage(state);
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitized));
     }
   } catch (e) {
     console.error('[LocalJSONDB] Write error:', e);
@@ -421,24 +472,19 @@ export function recordDispense(
   const card = db.cards[cardIndex];
   const lot = db.lots[lotIndex];
 
-  // Update card balances
   card.consumed_qty += quantity;
   card.remaining_qty = Math.max(0, card.remaining_qty - quantity);
 
-  // Update lot inventory
   lot.remaining_quantity = Math.max(0, lot.remaining_quantity - quantity);
 
-  // Update node outbox if offline
   const node = db.nodes.find((n) => n.id === nodeId);
   if (!isOnline && node) {
     node.outbox_depth = (node.outbox_depth || 0) + 1;
   }
 
-  // Update metrics
   db.metrics.total_grain_disbursed += quantity;
 
   const now = new Date().toISOString();
-  // Add audit log
   db.auditLogs = [
     {
       id: `audit-${Date.now().toString(36)}`,
