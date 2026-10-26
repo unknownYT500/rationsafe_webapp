@@ -415,7 +415,7 @@ export function verifyAndApproveRegistration(
   reg.card_id = cardId;
   reg.updated_at = now;
 
-  const quota = (reg.data.family_count || 3) * 5;
+  const quota = (reg.data.family_count || 3) * 10;
   const newCard: CardBeneficiary = {
     id: cardId,
     person_id: reg.person_id || `person-${Date.now().toString(36)}`,

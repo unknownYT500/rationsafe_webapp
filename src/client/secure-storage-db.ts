@@ -247,11 +247,50 @@ export async function getFullDecryptedState(): Promise<LocalDatabaseState> {
     } catch {}
   }
 
+  // Ensure cards table is populated with seed beneficiaries if empty
+  if (encryptedCards.length === 0) {
+    const seed = getInitialSeedDatabase();
+    try {
+      for (const card of seed.cards) {
+        await secureDb.cards.put(await encryptCardPII(card));
+      }
+      encryptedCards = await secureDb.cards.toArray();
+    } catch {}
+  }
+
   // Decrypt cards and registrations asynchronously
   const [cards, registrations] = await Promise.all([
     Promise.all(encryptedCards.map(decryptCardPII)),
     Promise.all(encryptedRegs.map(decryptRegistrationPII)),
   ]);
+
+  // Reconcile approved registrations: Ensure any approved citizen with a card_id exists in cards
+  for (const reg of registrations) {
+    if (reg.status === 'APPROVED' && reg.card_id && !cards.some((c) => c.id === reg.card_id)) {
+      const quota = (reg.data.family_count || 3) * 10;
+      const reconstructed: CardBeneficiary = {
+        id: reg.card_id,
+        person_id: reg.person_id || `person-${reg.id}`,
+        status: 'ACTIVE',
+        issued_at: reg.updated_at || reg.created_at || new Date().toISOString(),
+        first_name: reg.data.first_name,
+        last_name: reg.data.last_name,
+        full_name: `${reg.data.first_name} ${reg.data.last_name}`,
+        phone_number: reg.data.phone_number,
+        family_count: reg.data.family_count,
+        address: reg.data.address,
+        city: reg.data.city,
+        state: reg.data.state,
+        allocated_qty: quota,
+        consumed_qty: 0,
+        remaining_qty: quota,
+      };
+      cards.unshift(reconstructed);
+      try {
+        await secureDb.cards.put(await encryptCardPII(reconstructed));
+      } catch {}
+    }
+  }
 
   const metrics = metricsRecord?.value || {
     active_cards: cards.length,
@@ -496,7 +535,7 @@ export async function verifyAndApproveRegistrationAsync(
     await secureDb.registrations.put(rawReg);
     updatedReg = await decryptRegistrationPII(rawReg);
 
-    const quota = (updatedReg.data.family_count || 3) * 5;
+    const quota = (updatedReg.data.family_count || 3) * 10;
     const newCard: CardBeneficiary = {
       id: cardId,
       person_id: updatedReg.person_id || `person-${Date.now().toString(36)}`,

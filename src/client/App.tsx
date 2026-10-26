@@ -298,7 +298,36 @@ export default function App(): React.ReactElement {
         if (auditRes.ok && Array.isArray(auditRes.data) && auditRes.data.length > 0) finalAudit = auditRes.data;
       } catch {}
 
-      // Ensure nodes and lots never empty in edge client
+      // Reconcile approved registrations to guarantee newly issued cards always appear
+      for (const reg of finalRegs) {
+        if (reg.status === 'APPROVED' && reg.card_id && !finalCards.some((c) => c.id === reg.card_id)) {
+          const quota = (reg.data.family_count || 3) * 10;
+          const reconstructedCard: CardBeneficiary = {
+            id: reg.card_id,
+            person_id: reg.person_id || `person-${reg.id}`,
+            status: 'ACTIVE',
+            issued_at: reg.updated_at || reg.created_at || new Date().toISOString(),
+            first_name: reg.data.first_name,
+            last_name: reg.data.last_name,
+            full_name: `${reg.data.first_name} ${reg.data.last_name}`,
+            phone_number: reg.data.phone_number,
+            family_count: reg.data.family_count,
+            address: reg.data.address,
+            city: reg.data.city,
+            state: reg.data.state,
+            allocated_qty: quota,
+            consumed_qty: 0,
+            remaining_qty: quota,
+          };
+          finalCards.unshift(reconstructedCard);
+        }
+      }
+
+      // Ensure cards, nodes, and lots never empty in edge client
+      if (finalCards.length === 0) {
+        const seed = getInitialSeedDatabase();
+        finalCards = [...seed.cards];
+      }
       if (finalNodes.length === 0) {
         const seed = getInitialSeedDatabase();
         finalNodes = [...seed.nodes];
@@ -321,9 +350,9 @@ export default function App(): React.ReactElement {
       setCards(finalCards);
       if (preferredCardId && finalCards.some((c) => c.id === preferredCardId)) {
         setSelectedCardId(preferredCardId);
-      } else if (!selectedCardId && finalCards.length > 0) {
-        setSelectedCardId(finalCards[0].id);
-      } else if (selectedCardId && !finalCards.some((c) => c.id === selectedCardId) && finalCards.length > 0) {
+      } else if (selectedCardId && finalCards.some((c) => c.id === selectedCardId)) {
+        // Retain active card selection
+      } else if (finalCards.length > 0) {
         setSelectedCardId(finalCards[0].id);
       }
 
@@ -373,7 +402,7 @@ export default function App(): React.ReactElement {
     const nextNode = nodes.find((node) => node.id === nodeId);
     selectedNodeIdRef.current = nodeId;
     setSelectedNodeId(nodeId);
-    setSelectedCardId('');
+    // Keep active card selection intact across distribution terminals
     setIsOnline(nextNode?.status === 'ONLINE');
     setDistExecutionSummary(null);
     setDistCurrentState('ATTEMPT');
@@ -976,20 +1005,42 @@ export default function App(): React.ReactElement {
                 </div>
 
                 {/* Quick Card Switcher & Insert New Card Button */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                  <div className="role-selector" style={{ background: '#090d16' }}>
-                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Switch Card:</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  <div
+                    className="role-selector"
+                    style={{
+                      background: '#090d16',
+                      border: '1px solid var(--border-subtle)',
+                      padding: '0.35rem 0.65rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem',
+                      borderRadius: 'var(--radius-md)',
+                    }}
+                  >
+                    <CreditCard size={15} color="var(--cyan-400)" />
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Switch Card:</span>
                     <select
-                      value={selectedCardId}
+                      value={selectedCardId || (cards[0]?.id ?? '')}
                       onChange={(e) => {
                         setSelectedCardId(e.target.value);
                         setDistExecutionSummary(null);
                         setDistCurrentState('ATTEMPT');
                       }}
+                      style={{
+                        minWidth: '240px',
+                        cursor: 'pointer',
+                        background: 'transparent',
+                        color: 'var(--text-main)',
+                        fontWeight: 600,
+                        fontSize: '0.82rem',
+                        outline: 'none',
+                        border: 'none',
+                      }}
                     >
-                      {cards.map((c) => (
+                      {(cards.length > 0 ? cards : getInitialSeedDatabase().cards).map((c) => (
                         <option key={c.id} value={c.id}>
-                          {c.full_name} ({c.remaining_qty}kg rem) - {c.id.slice(0, 8)}...
+                          {c.full_name} ({c.remaining_qty}kg rem) - {c.id.slice(0, 16)}
                         </option>
                       ))}
                     </select>
@@ -1504,8 +1555,9 @@ export default function App(): React.ReactElement {
                                 color: 'var(--emerald-400)',
                                 borderColor: 'var(--emerald-500)',
                               }}
-                              onClick={() => {
+                              onClick={async () => {
                                 if (r.card_id) {
+                                  await loadAllData(r.card_id);
                                   setSelectedCardId(r.card_id);
                                   setDistExecutionSummary(null);
                                   setDistCurrentState('ATTEMPT');
