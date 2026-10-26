@@ -1385,38 +1385,68 @@ export default function App(): React.ReactElement {
                     </tr>
                   </thead>
                   <tbody>
-                    {registrations
-                      .filter((registration) => (registration.node_id || nodes[0]?.id) === selectedNodeId)
-                      .map((r) => (
+                    {registrations.length === 0 ? (
+                      <tr>
+                        <td colSpan={3} style={{ textAlign: 'center', padding: '2.5rem 1rem', color: 'var(--text-muted)' }}>
+                          <Users size={28} style={{ margin: '0 auto 0.5rem auto', opacity: 0.5, display: 'block' }} />
+                          <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>No registrations pending</div>
+                          <div style={{ fontSize: '0.78rem' }}>Enroll a citizen on the left to review and approve their card.</div>
+                        </td>
+                      </tr>
+                    ) : (
+                      registrations.map((r) => (
                       <tr key={r.id}>
                         <td>
                           <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>
                             {r.data.first_name} {r.data.last_name}
                           </div>
                           <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>{r.data.phone_number}</div>
-                          <div style={{ fontSize: '0.72rem', color: 'var(--text-dim)' }}>{r.data.city}, {r.data.state}</div>
+                          <div style={{ fontSize: '0.72rem', color: 'var(--text-dim)' }}>
+                            {r.data.city}, {r.data.state}
+                          </div>
+                          <div style={{ fontSize: '0.68rem', color: 'var(--cyan-400)', marginTop: '2px' }}>
+                            ID: <code>{r.id}</code>
+                          </div>
                         </td>
                         <td>
-                          <div style={{ fontSize: '0.8rem' }}>{r.data.family_count} members ({r.data.family_count * 10}kg quota)</div>
+                          <div style={{ fontSize: '0.8rem', fontWeight: 600 }}>
+                            {r.data.family_count} members ({r.data.family_count * 10}kg quota)
+                          </div>
                           {r.card_id ? (
-                            <code style={{ fontSize: '0.72rem', color: 'var(--cyan-400)' }}>Card: {r.card_id.slice(0, 12)}...</code>
+                            <code style={{ fontSize: '0.72rem', color: 'var(--emerald-400)' }}>Card: {r.card_id.slice(0, 14)}...</code>
                           ) : (
-                            <span style={{ fontSize: '0.72rem', color: 'var(--text-dim)' }}>No Card Yet</span>
+                            <span style={{ fontSize: '0.72rem', color: 'var(--amber-400)', fontWeight: 600 }}>
+                              ● Pending Card Issuance
+                            </span>
                           )}
                         </td>
                         <td>
                           {r.status !== 'APPROVED' ? (
                             <button
                               className="btn-primary"
-                              style={{ fontSize: '0.74rem', padding: '0.35rem 0.65rem' }}
+                              style={{
+                                fontSize: '0.76rem',
+                                padding: '0.45rem 0.75rem',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '0.35rem',
+                                background: 'linear-gradient(135deg, #059669 0%, #10b981 100%)',
+                                boxShadow: '0 2px 8px rgba(16, 185, 129, 0.35)',
+                              }}
                               onClick={() => handleApproveRegistration(r.id)}
                             >
+                              <CheckCircle size={14} />
                               Approve & Issue Card
                             </button>
                           ) : (
                             <button
                               className="btn-secondary"
-                              style={{ fontSize: '0.74rem', padding: '0.35rem 0.65rem' }}
+                              style={{
+                                fontSize: '0.76rem',
+                                padding: '0.45rem 0.75rem',
+                                color: 'var(--emerald-400)',
+                                borderColor: 'var(--emerald-500)',
+                              }}
                               onClick={() => {
                                 if (r.card_id) {
                                   setSelectedCardId(r.card_id);
@@ -1431,7 +1461,8 @@ export default function App(): React.ReactElement {
                           )}
                         </td>
                       </tr>
-                    ))}
+                    ))
+                    )}
                   </tbody>
                 </table>
               </div>
