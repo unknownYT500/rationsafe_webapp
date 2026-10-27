@@ -30,7 +30,16 @@ import {
   Sliders,
 } from 'lucide-react';
 import type { UserRole, TxnState, ReasonCode } from '../core/types.js';
-import { subscribeToGrainTrustUpdates, getSupabaseStatus, supabase, isSupabaseConfigured } from './supabase.js';
+import {
+  subscribeToGrainTrustUpdates,
+  getSupabaseStatus,
+  supabase,
+  isSupabaseConfigured,
+  fetchCloudDataFromSupabase,
+  insertRegistrationToSupabase,
+  approveRegistrationInSupabase,
+  recordDispenseInSupabase,
+} from './supabase.js';
 import {
   loadDatabase,
   saveDatabase,
@@ -308,6 +317,20 @@ export default function App(): React.ReactElement {
         if (auditRes.ok && Array.isArray(auditRes.data) && auditRes.data.length > 0) finalAudit = auditRes.data;
       } catch {}
 
+      // Overlay live cloud data from Supabase if provisioned and online
+      try {
+        const cloudData = await fetchCloudDataFromSupabase();
+        if (cloudData) {
+          if (cloudData.cards && cloudData.cards.length > 0) finalCards = cloudData.cards;
+          if (cloudData.lots && cloudData.lots.length > 0) finalLots = cloudData.lots;
+          if (cloudData.nodes && cloudData.nodes.length > 0) finalNodes = cloudData.nodes;
+          if (cloudData.registrations && cloudData.registrations.length > 0) finalRegs = cloudData.registrations;
+          if (cloudData.auditLogs && cloudData.auditLogs.length > 0) finalAudit = cloudData.auditLogs;
+        }
+      } catch (e) {
+        console.warn('[Supabase] fetchCloudData error in loadAllData:', e);
+      }
+
       // Reconcile approved registrations to guarantee newly issued cards always appear
       for (const reg of finalRegs) {
         if (reg.status === 'APPROVED' && reg.card_id && !finalCards.some((c) => c.id === reg.card_id)) {
@@ -446,12 +469,14 @@ export default function App(): React.ReactElement {
         body: JSON.stringify({ ...regForm, node_id: selectedNodeId }),
       });
       if (res.ok && res.data) {
+        await insertRegistrationToSupabase({ id: res.data.id, node_id: selectedNodeId, data: regForm });
         setRegFeedback({
           type: 'success',
           message: `Registration recorded for ${regForm.first_name} ${regForm.last_name}! Record ID: ${res.data.id}. Click "Verify" & "Approve" below to activate their card.`,
         });
       } else {
         const { reg } = await recordRegistrationAsync(regForm, selectedNodeId);
+        await insertRegistrationToSupabase({ id: reg.id, node_id: selectedNodeId, data: regForm });
         setRegFeedback({
           type: 'success',
           message: `Registration encrypted (AES-GCM-256) & saved for ${regForm.first_name} ${regForm.last_name}! Record ID: ${reg.id}. Click "Verify" & "Approve" below to activate their card.`,
@@ -460,6 +485,7 @@ export default function App(): React.ReactElement {
       await loadAllData();
     } catch (err: any) {
       const { reg } = await recordRegistrationAsync(regForm, selectedNodeId);
+      await insertRegistrationToSupabase({ id: reg.id, node_id: selectedNodeId, data: regForm });
       setRegFeedback({
         type: 'success',
         message: `Registration encrypted (AES-GCM-256) & saved for ${regForm.first_name} ${regForm.last_name}! Record ID: ${reg.id}. Click "Verify" & "Approve" below to activate.`,
@@ -530,6 +556,7 @@ export default function App(): React.ReactElement {
       } else {
         const approved = await verifyAndApproveRegistrationAsync(regId);
         if (approved) {
+          await approveRegistrationInSupabase(regId, approved.card);
           selectedCardIdRef.current = approved.card.id;
           await loadAllData(approved.card.id);
           setSelectedCardId(approved.card.id);
@@ -537,7 +564,7 @@ export default function App(): React.ReactElement {
           setDistCurrentState('ATTEMPT');
           setActiveTab('distribution');
           alert(
-            `Card Activated Successfully (Encrypted IndexedDB)!\n\n` +
+            `Card Activated Successfully!\n\n` +
               `Beneficiary: ${approved.card.full_name}\n` +
               `Card ID: ${approved.card.id}\n` +
               `Allocated Quota: ${approved.card.allocated_qty} kg\n\n` +
@@ -548,6 +575,7 @@ export default function App(): React.ReactElement {
     } catch (e: any) {
       const approved = await verifyAndApproveRegistrationAsync(regId);
       if (approved) {
+        await approveRegistrationInSupabase(regId, approved.card);
         selectedCardIdRef.current = approved.card.id;
         await loadAllData(approved.card.id);
         setSelectedCardId(approved.card.id);
@@ -555,7 +583,7 @@ export default function App(): React.ReactElement {
         setDistCurrentState('ATTEMPT');
         setActiveTab('distribution');
         alert(
-          `Card Activated Successfully (Encrypted IndexedDB)!\n\n` +
+          `Card Activated Successfully!\n\n` +
             `Beneficiary: ${approved.card.full_name}\n` +
             `Card ID: ${approved.card.id}\n` +
             `Allocated Quota: ${approved.card.allocated_qty} kg\n\n` +
@@ -619,6 +647,9 @@ export default function App(): React.ReactElement {
           });
         } else {
           const result = await recordDispenseAsync(selectedCardId, distLotId, selectedNodeId, distQuantity, true);
+          if (activeBeneficiary) {
+            await recordDispenseInSupabase(activeBeneficiary, distLotId, distQuantity, selectedNodeId);
+          }
           setDistCurrentState('RECONCILED');
           setDistExecutionSummary({
             success: true,
