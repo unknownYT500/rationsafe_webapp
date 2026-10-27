@@ -1204,14 +1204,17 @@ export default function App(): React.ReactElement {
                   {activeNode?.location || 'Location unavailable'} · ID: {activeNode?.id || selectedNodeId}
                 </div>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', fontSize: '0.8rem' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Terminal mode</span>
-                <span
-                  className={`badge ${isOnline ? 'badge-reconciled' : 'badge-provisional'}`}
-                  style={{ borderColor: nodeAccent, color: nodeAccent }}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                <button
+                  type="button"
+                  onClick={handleToggleOnline}
+                  className={`terminal-toggle-btn ${isOnline ? 'active-online' : 'active-offline'}`}
+                  title="Click to toggle network connectivity: Switch between Online Central Mode and Offline Autonomous Edge Mode"
                 >
-                  {isOnline ? 'ONLINE — CENTRAL LEDGER' : 'OFFLINE — LOCAL EDGE LEASE'}
-                </span>
+                  <span className="toggle-pill-dot" />
+                  <span>{isOnline ? 'ONLINE — CENTRAL LEDGER' : 'OFFLINE — LOCAL EDGE LEASE'}</span>
+                  <span className="toggle-action-hint">Click to Simulate {isOnline ? 'Offline' : 'Online'}</span>
+                </button>
               </div>
             </div>
             <div className="beneficiary-hero"
@@ -1372,9 +1375,29 @@ export default function App(): React.ReactElement {
                     Automated transitions: ATTEMPT → PROVISIONAL_ISSUE / FAIL_REASON → FALLBACK_AUTH → RECONCILED
                   </p>
                 </div>
-                <span className="badge badge-provisional">
-                  {isOnline ? 'Online Central Validation' : 'Offline Ed25519 Token Signing'}
-                </span>
+                <button
+                  type="button"
+                  onClick={handleToggleOnline}
+                  className={`terminal-toggle-btn ${isOnline ? 'active-online' : 'active-offline'}`}
+                  style={{ padding: '0.35rem 0.8rem', fontSize: '0.75rem' }}
+                  title="Click to toggle network: Test Online vs Offline Dispense"
+                >
+                  <span className="toggle-pill-dot" />
+                  <span>{isOnline ? 'Online Central Validation' : 'Offline Ed25519 Token Signing'}</span>
+                  <span className="toggle-action-hint">Toggle to {isOnline ? 'Offline' : 'Online'}</span>
+                </button>
+              </div>
+
+              <div className="dispense-network-mode-pill">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span className="toggle-pill-dot" style={{ background: isOnline ? '#10b981' : '#f59e0b', boxShadow: isOnline ? '0 0 8px #10b981' : '0 0 8px #f59e0b' }} />
+                  <span>
+                    Current Scenario: <strong>{isOnline ? 'Online Mode (Central Cloud Ledger)' : 'Offline Mode (Autonomous Edge Leases)'}</strong>
+                  </span>
+                </div>
+                <button type="button" onClick={handleToggleOnline} className="btn-text-toggle">
+                  Simulate {isOnline ? 'Offline Outage' : 'Online Restored'}
+                </button>
               </div>
 
               <div className="pipeline-stepper">
