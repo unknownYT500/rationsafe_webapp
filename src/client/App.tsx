@@ -428,6 +428,12 @@ export default function App(): React.ReactElement {
     };
   }, [selectedNodeId]);
 
+  // Active selected beneficiary card & terminal node
+  const activeBeneficiary = cards.find((c) => c.id === selectedCardId) || cards[0];
+  const activeLot = lots.find((l) => l.id === distLotId) || lots[0];
+  const activeNode = nodes.find((n) => n.id === selectedNodeId) || nodes[0];
+  const nodeAccent = selectedNodeId.includes('beta') ? 'var(--amber-400)' : 'var(--cyan-400)';
+
   const handleNodeChange = (nodeId: string) => {
     const nextNode = nodes.find((node) => node.id === nodeId);
     selectedNodeIdRef.current = nodeId;
