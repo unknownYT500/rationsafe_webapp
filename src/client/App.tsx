@@ -145,6 +145,7 @@ function getFailureDiagnostic(code: string | undefined, message: string | undefi
 
 let currentAuthToken = '';
 let currentActiveRole: UserRole = 'DISTRIBUTION_OPERATOR';
+const DATA_REFRESH_INTERVAL_MS = 15000;
 
 export function setClientAuthToken(token: string) {
   currentAuthToken = token;
@@ -159,11 +160,10 @@ async function safeFetchJson<T = any>(
     if (currentAuthToken && !headers.has('Authorization')) {
       headers.set('Authorization', `Bearer ${currentAuthToken}`);
     }
-    if (!headers.has('x-user-role')) {
-      headers.set('x-user-role', currentActiveRole);
-    }
-    if (!headers.has('x-user-id')) {
-      headers.set('x-user-id', `operator_${currentActiveRole.toLowerCase()}`);
+
+    // The server accepts bearer tokens only. Custom x-user-* headers are legacy trust signals and can be spoofed.
+    if (init?.body && typeof init.body === 'string' && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
     }
 
     const res = await fetch(input, { ...init, headers });
@@ -214,24 +214,10 @@ export default function App(): React.ReactElement {
   const [selectedNodeId, setSelectedNodeId] = useState<string>('node-alpha-001');
   const selectedNodeIdRef = useRef(selectedNodeId);
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState<boolean>(false);
+  const dataRequestRef = useRef(0);
 
-  // Sync token whenever role changes
   useEffect(() => {
     currentActiveRole = activeRole;
-    fetch('/api/v1/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role: activeRole, username: `operator_${activeRole.toLowerCase()}` }),
-    })
-      .then((r) => r.json())
-      .then((res) => {
-        if (res.token) {
-          currentAuthToken = res.token;
-        }
-      })
-      .catch((err) => {
-        console.warn('[ZeroTrust] Token acquisition notice:', err);
-      });
   }, [activeRole]);
 
   // Core Data
@@ -287,6 +273,8 @@ export default function App(): React.ReactElement {
 
   // Load all data from API, Supabase, or encrypted IndexedDB store
   const loadAllData = async (preferredCardId?: string, nodeId = selectedNodeIdRef.current) => {
+    const requestId = ++dataRequestRef.current;
+
     try {
       let localDb: LocalDatabaseState;
       try {
@@ -369,6 +357,8 @@ export default function App(): React.ReactElement {
         metrics: finalMetrics,
       });
 
+      if (requestId !== dataRequestRef.current) return;
+
       setCards(finalCards);
       const targetCardId = preferredCardId || selectedCardIdRef.current;
       if (targetCardId && finalCards.some((c) => c.id === targetCardId)) {
@@ -401,7 +391,7 @@ export default function App(): React.ReactElement {
   useEffect(() => {
     selectedNodeIdRef.current = selectedNodeId;
     loadAllData(undefined, selectedNodeId);
-    const interval = setInterval(() => loadAllData(undefined, selectedNodeId), 5000);
+    const interval = setInterval(() => loadAllData(undefined, selectedNodeIdRef.current), DATA_REFRESH_INTERVAL_MS);
 
     // Live bidirectional sync from Supabase
     const channel = subscribeToGrainTrustUpdates((table) => {
@@ -414,12 +404,6 @@ export default function App(): React.ReactElement {
       channel?.unsubscribe();
     };
   }, [selectedNodeId]);
-
-  // Active selected beneficiary card
-  const activeBeneficiary = cards.find((c) => c.id === selectedCardId) || cards[0];
-  const activeLot = lots.find((l) => l.id === distLotId) || lots[0];
-  const activeNode = nodes.find((n) => n.id === selectedNodeId) || nodes[0];
-  const nodeAccent = selectedNodeId.includes('beta') ? 'var(--amber-400)' : 'var(--cyan-400)';
 
   const handleNodeChange = (nodeId: string) => {
     const nextNode = nodes.find((node) => node.id === nodeId);
@@ -458,7 +442,7 @@ export default function App(): React.ReactElement {
     try {
       const res = await safeFetchJson('/api/v1/registrations', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-user-id': 'operator-desk' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...regForm, node_id: selectedNodeId }),
       });
       if (res.ok && res.data) {
@@ -519,13 +503,13 @@ export default function App(): React.ReactElement {
       // 1. Verify if not already verified
       await safeFetchJson(`/api/v1/registrations/${regId}/verify`, {
         method: 'POST',
-        headers: { 'x-user-id': 'verifier-01' },
+        headers: { 'Content-Type': 'application/json' },
       });
 
       // 2. Approve
       const res = await safeFetchJson(`/api/v1/registrations/${regId}/approve`, {
         method: 'POST',
-        headers: { 'x-user-id': 'supervisor-01' },
+        headers: { 'Content-Type': 'application/json' },
       });
 
       if (res.ok && res.data) {
@@ -602,7 +586,6 @@ export default function App(): React.ReactElement {
           headers: {
             'Content-Type': 'application/json',
             'idempotency-key': `online_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
-            'x-user-id': 'staff-distributor',
           },
           body: JSON.stringify({
             card_id: selectedCardId,
@@ -635,7 +618,6 @@ export default function App(): React.ReactElement {
             rawDetails: res.data,
           });
         } else {
-          // Encrypted IndexedDB store fallback when central database/backend is offline
           const result = await recordDispenseAsync(selectedCardId, distLotId, selectedNodeId, distQuantity, true);
           setDistCurrentState('RECONCILED');
           setDistExecutionSummary({
@@ -643,7 +625,7 @@ export default function App(): React.ReactElement {
             mode: 'ONLINE_CENTRAL',
             state: 'RECONCILED',
             title: 'Grain Successfully Dispensed (Encrypted IndexedDB)',
-            explanation: `Disbursed ${distQuantity} kg of ${activeLot?.name || 'grain'} to ${activeBeneficiary?.full_name || 'Beneficiary'}. Quota updated and permanently committed to AES-GCM-256 IndexedDB ledger.`,
+            explanation: `Disbursed ${distQuantity} kg of ${activeLot?.name || 'grain'} to ${activeBeneficiary?.full_name || 'Beneficiary'}. Quota updated and permanently committed to the encrypted local ledger.`,
             rawDetails: result,
           });
         }
@@ -671,7 +653,7 @@ export default function App(): React.ReactElement {
             mode: 'OFFLINE_EDGE_SIGNED',
             state: res.data.state || 'PROVISIONAL_ISSUE',
             title: 'Provisional Offline Grain Issued (Cryptographically Signed)',
-            explanation: `Terminal ${activeNode?.name || 'Alpha'} issued a provisional ration of ${distQuantity} kg to ${activeBeneficiary?.full_name || 'Beneficiary'}. A tamper-evident Ed25519 digital token was signed and stored in the local outbox.`,
+            explanation: `Terminal ${activeNode?.name || 'Alpha'} issued a provisional ration of ${distQuantity} kg to ${activeBeneficiary?.full_name || 'Beneficiary'}. A tamper-evident token was created and queued for later reconciliation.`,
             rawDetails: res.data,
           });
         } else if (res.data?.code) {
@@ -687,7 +669,6 @@ export default function App(): React.ReactElement {
             rawDetails: res.data,
           });
         } else {
-          // Offline fallback via Encrypted IndexedDB store
           const result = await recordDispenseAsync(selectedCardId, distLotId, selectedNodeId, distQuantity, false);
           setDistCurrentState('PROVISIONAL_ISSUE');
           setDistExecutionSummary({
@@ -695,7 +676,7 @@ export default function App(): React.ReactElement {
             mode: 'OFFLINE_EDGE_SIGNED',
             state: 'PROVISIONAL_ISSUE',
             title: 'Provisional Offline Grain Issued (Encrypted IndexedDB)',
-            explanation: `Terminal issued a provisional ration of ${distQuantity} kg to ${activeBeneficiary?.full_name || 'Beneficiary'}. Ed25519 token queued in persistent outbox with FIFO audit retention.`,
+            explanation: `Terminal issued a provisional ration of ${distQuantity} kg to ${activeBeneficiary?.full_name || 'Beneficiary'}. The signed token was queued in persistent storage and can be reconciled later.`,
             rawDetails: result,
           });
         }
@@ -867,7 +848,7 @@ export default function App(): React.ReactElement {
                 <option value="ADMINISTRATOR">Administrator</option>
               </select>
             </div>
-            <span style={{ fontSize: '0.66rem', color: activeRole === 'AUDITOR' ? 'var(--cyan-400)' : activeRole === 'ADMINISTRATOR' ? 'var(--rose-400)' : activeRole === 'SUPERVISOR' ? 'var(--emerald-400)' : 'var(--amber-400)' }}>
+            <span style={{ fontSize: '0.66rem', color: activeRole === 'AUDITOR' ? 'var(--cyan-400)' : activeRole === 'ADMINISTRATOR' ? 'var(--rose-400)' : activeRole === 'SUPERVISOR' ? 'var(--emerald-400)' : 'var(--text-muted)' }}>
               {activeRole === 'DISTRIBUTION_OPERATOR' && '● POS Dispensing & Warehouse Stock'}
               {activeRole === 'REGISTRATION_OPERATOR' && '● Citizen Intake & KYC Enrollment'}
               {activeRole === 'SUPERVISOR' && '● Field Approvals, Override & Dispense'}
@@ -1159,7 +1140,6 @@ export default function App(): React.ReactElement {
         {/* TAB 1: GRAIN DISTRIBUTION DESK */}
         {activeTab === 'distribution' && (
           <div className="tab-view tab-view--distribution">
-            {/* This panel makes the active node explicit because central inventory and cards are shared. */}
             <div
               aria-live="polite"
               style={{
@@ -1197,7 +1177,6 @@ export default function App(): React.ReactElement {
                 </span>
               </div>
             </div>
-            {/* Active Beneficiary Card Overview Banner */}
             <div className="beneficiary-hero"
               style={{
                 background: 'linear-gradient(135deg, rgba(30, 41, 59, 0.8), rgba(15, 23, 42, 0.95))',
@@ -1240,7 +1219,6 @@ export default function App(): React.ReactElement {
                   </div>
                 </div>
 
-                {/* Quick Card Switcher & Insert New Card Button */}
                 <div className="hero-actions-bar" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
                   <div
                     className="role-selector hero-card-selector"
@@ -1299,7 +1277,6 @@ export default function App(): React.ReactElement {
                 </div>
               </div>
 
-              {/* Beneficiary Quota Progress Gauge */}
               {activeBeneficiary && (
                 <div style={{ marginTop: '1.25rem', paddingTop: '1rem', borderTop: '1px solid var(--border-subtle)' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.84rem', marginBottom: '0.4rem' }}>
@@ -1347,7 +1324,6 @@ export default function App(): React.ReactElement {
               )}
             </div>
 
-            {/* Dispense Form & 5-State Transition Engine */}
             <div className="glass-panel" style={{ marginBottom: '1.5rem' }}>
               <div className="panel-header">
                 <div>
@@ -1364,7 +1340,6 @@ export default function App(): React.ReactElement {
                 </span>
               </div>
 
-              {/* 5-State Stepper */}
               <div className="pipeline-stepper">
                 <div className="pipeline-connector" />
                 <div className={`pipeline-step ${distCurrentState === 'ATTEMPT' ? 'active' : ''}`}>
@@ -1389,7 +1364,6 @@ export default function App(): React.ReactElement {
                 </div>
               </div>
 
-              {/* Form Inputs */}
               <div className="grid-3" style={{ marginTop: '1.5rem' }}>
                 <div className="form-group">
                   <label className="form-label">Grain Commodity Lot</label>
@@ -1420,7 +1394,6 @@ export default function App(): React.ReactElement {
 
               </div>
 
-              {/* Fallback Option */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '1.25rem' }}>
                 <input
                   type="checkbox"
@@ -1433,7 +1406,6 @@ export default function App(): React.ReactElement {
                 </label>
               </div>
 
-              {/* Action Button */}
               <button
                 className="btn-primary"
                 onClick={handleDispenseGrain}
@@ -1455,7 +1427,6 @@ export default function App(): React.ReactElement {
                 </span>
               </button>
 
-              {/* Human-Readable Textual Diagnostic Display (NO RAW JSONL) */}
               {distExecutionSummary && (
                 <div
                   style={{
@@ -1502,7 +1473,6 @@ export default function App(): React.ReactElement {
                     </span>
                   </div>
 
-                  {/* Real Textual Reason */}
                   <div
                     style={{
                       marginTop: '0.85rem',
@@ -1520,7 +1490,6 @@ export default function App(): React.ReactElement {
                     {distExecutionSummary.explanation}
                   </div>
 
-                  {/* Recommended Action / Remediation */}
                   {distExecutionSummary.remediation && (
                     <div
                       style={{
@@ -1537,7 +1506,6 @@ export default function App(): React.ReactElement {
                     </div>
                   )}
 
-                  {/* Success summary details */}
                   {distExecutionSummary.success && (
                     <div style={{ display: 'flex', gap: '1.5rem', marginTop: '0.85rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                       <div>Dispensed: <strong style={{ color: '#ffffff' }}>{distQuantity} kg</strong></div>
@@ -1551,10 +1519,8 @@ export default function App(): React.ReactElement {
           </div>
         )}
 
-        {/* TAB 2: BENEFICIARY REGISTRATION */}
         {activeTab === 'registrations' && (
           <div className="grid-2">
-            {/* Form */}
             <div className="glass-panel">
               <div className="panel-header">
                 <div>
@@ -1701,7 +1667,6 @@ export default function App(): React.ReactElement {
               </form>
             </div>
 
-            {/* Beneficiary Registry Table */}
             <div className="glass-panel">
               <div className="panel-header">
                 <div>
@@ -1733,83 +1698,83 @@ export default function App(): React.ReactElement {
                       </tr>
                     ) : (
                       registrations.map((r) => (
-                      <tr key={r.id}>
-                        <td>
-                          <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>
-                            {r.data.first_name} {r.data.last_name}
-                          </div>
-                          <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>{r.data.phone_number}</div>
-                          <div style={{ fontSize: '0.72rem', color: 'var(--text-dim)' }}>
-                            {r.data.city}, {r.data.state}
-                          </div>
-                          <div style={{ fontSize: '0.68rem', color: 'var(--cyan-400)', marginTop: '2px' }}>
-                            ID: <code>{r.id}</code>
-                          </div>
-                        </td>
-                        <td>
-                          <div style={{ fontSize: '0.8rem', fontWeight: 600 }}>
-                            {r.data.family_count} members ({r.data.family_count * 10}kg quota)
-                          </div>
-                          {r.card_id ? (
-                            <code style={{ fontSize: '0.72rem', color: 'var(--emerald-400)' }}>Card: {r.card_id.slice(0, 14)}...</code>
-                          ) : (
-                            <span style={{ fontSize: '0.72rem', color: 'var(--amber-400)', fontWeight: 600 }}>
-                              ● Pending Card Issuance
-                            </span>
-                          )}
-                        </td>
-                        <td>
-                          {r.status !== 'APPROVED' ? (
-                            <button
-                              className="btn-primary"
-                              style={{
-                                fontSize: '0.76rem',
-                                padding: '0.45rem 0.75rem',
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: '0.35rem',
-                                background: canApproveRegistrations
-                                  ? 'linear-gradient(135deg, #059669 0%, #10b981 100%)'
-                                  : '#475569',
-                                boxShadow: canApproveRegistrations
-                                  ? '0 2px 8px rgba(16, 185, 129, 0.35)'
-                                  : 'none',
-                                cursor: canApproveRegistrations ? 'pointer' : 'not-allowed',
-                                opacity: canApproveRegistrations ? 1 : 0.6,
-                              }}
-                              onClick={() => canApproveRegistrations && handleApproveRegistration(r.id)}
-                              disabled={!canApproveRegistrations}
-                              title={canApproveRegistrations ? "Approve registration and activate card" : "Requires Supervisor or Administrator approval"}
-                            >
-                              <CheckCircle size={14} />
-                              {canApproveRegistrations ? 'Approve & Issue Card' : 'Approval Restricted (Supervisor Only)'}
-                            </button>
-                          ) : (
-                            <button
-                              className="btn-secondary"
-                              style={{
-                                fontSize: '0.76rem',
-                                padding: '0.45rem 0.75rem',
-                                color: 'var(--emerald-400)',
-                                borderColor: 'var(--emerald-500)',
-                              }}
-                              onClick={async () => {
-                                if (r.card_id) {
-                                  selectedCardIdRef.current = r.card_id;
-                                  await loadAllData(r.card_id);
-                                  setSelectedCardId(r.card_id);
-                                  setDistExecutionSummary(null);
-                                  setDistCurrentState('ATTEMPT');
-                                  setActiveTab('distribution');
-                                }
-                              }}
-                            >
-                              Dispense to Card →
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    ))
+                        <tr key={r.id}>
+                          <td>
+                            <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>
+                              {r.data.first_name} {r.data.last_name}
+                            </div>
+                            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>{r.data.phone_number}</div>
+                            <div style={{ fontSize: '0.72rem', color: 'var(--text-dim)' }}>
+                              {r.data.city}, {r.data.state}
+                            </div>
+                            <div style={{ fontSize: '0.68rem', color: 'var(--cyan-400)', marginTop: '2px' }}>
+                              ID: <code>{r.id}</code>
+                            </div>
+                          </td>
+                          <td>
+                            <div style={{ fontSize: '0.8rem', fontWeight: 600 }}>
+                              {r.data.family_count} members ({r.data.family_count * 10}kg quota)
+                            </div>
+                            {r.card_id ? (
+                              <code style={{ fontSize: '0.72rem', color: 'var(--emerald-400)' }}>Card: {r.card_id.slice(0, 14)}...</code>
+                            ) : (
+                              <span style={{ fontSize: '0.72rem', color: 'var(--amber-400)', fontWeight: 600 }}>
+                                ● Pending Card Issuance
+                              </span>
+                            )}
+                          </td>
+                          <td>
+                            {r.status !== 'APPROVED' ? (
+                              <button
+                                className="btn-primary"
+                                style={{
+                                  fontSize: '0.76rem',
+                                  padding: '0.45rem 0.75rem',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '0.35rem',
+                                  background: canApproveRegistrations
+                                    ? 'linear-gradient(135deg, #059669 0%, #10b981 100%)'
+                                    : '#475569',
+                                  boxShadow: canApproveRegistrations
+                                    ? '0 2px 8px rgba(16, 185, 129, 0.35)'
+                                    : 'none',
+                                  cursor: canApproveRegistrations ? 'pointer' : 'not-allowed',
+                                  opacity: canApproveRegistrations ? 1 : 0.6,
+                                }}
+                                onClick={() => canApproveRegistrations && handleApproveRegistration(r.id)}
+                                disabled={!canApproveRegistrations}
+                                title={canApproveRegistrations ? "Approve registration and activate card" : "Requires Supervisor or Administrator approval"}
+                              >
+                                <CheckCircle size={14} />
+                                {canApproveRegistrations ? 'Approve & Issue Card' : 'Approval Restricted (Supervisor Only)'}
+                              </button>
+                            ) : (
+                              <button
+                                className="btn-secondary"
+                                style={{
+                                  fontSize: '0.76rem',
+                                  padding: '0.45rem 0.75rem',
+                                  color: 'var(--emerald-400)',
+                                  borderColor: 'var(--emerald-500)',
+                                }}
+                                onClick={async () => {
+                                  if (r.card_id) {
+                                    selectedCardIdRef.current = r.card_id;
+                                    await loadAllData(r.card_id);
+                                    setSelectedCardId(r.card_id);
+                                    setDistExecutionSummary(null);
+                                    setDistCurrentState('ATTEMPT');
+                                    setActiveTab('distribution');
+                                  }
+                                }}
+                              >
+                                Dispense to Card →
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))
                     )}
                   </tbody>
                 </table>
@@ -1818,7 +1783,6 @@ export default function App(): React.ReactElement {
           </div>
         )}
 
-        {/* TAB 3: EDGE OUTBOX & SYNC */}
         {activeTab === 'edge-sync' && (
           <div className="glass-panel">
             <div className="panel-header">
@@ -1908,7 +1872,6 @@ export default function App(): React.ReactElement {
           </div>
         )}
 
-        {/* TAB 4: GRAIN INVENTORY */}
         {activeTab === 'inventory' && (
           <div className="glass-panel">
             <div className="panel-header">
@@ -1946,7 +1909,6 @@ export default function App(): React.ReactElement {
           </div>
         )}
 
-        {/* TAB 5: AUDIT TRAIL */}
         {activeTab === 'audit-trail' && (
           <div className="glass-panel">
             <div className="panel-header">
@@ -1991,3 +1953,4 @@ export default function App(): React.ReactElement {
     </div>
   );
 }
+
