@@ -219,7 +219,13 @@ export default function App(): React.ReactElement {
     'distribution' | 'registrations' | 'edge-sync' | 'inventory' | 'audit-trail'
   >('distribution');
   const [activeRole, setActiveRole] = useState<UserRole>('DISTRIBUTION_OPERATOR');
-  const [isOnline, setIsOnline] = useState<boolean>(true);
+  const [isOnline, setIsOnline] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('graintrust_terminal_online_node-alpha-001');
+      if (saved !== null) return saved === 'true';
+    }
+    return true;
+  });
   const [selectedNodeId, setSelectedNodeId] = useState<string>('node-alpha-001');
   const selectedNodeIdRef = useRef(selectedNodeId);
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState<boolean>(false);
@@ -323,7 +329,21 @@ export default function App(): React.ReactElement {
         if (cloudData) {
           if (cloudData.cards && cloudData.cards.length > 0) finalCards = cloudData.cards;
           if (cloudData.lots && cloudData.lots.length > 0) finalLots = cloudData.lots;
-          if (cloudData.nodes && cloudData.nodes.length > 0) finalNodes = cloudData.nodes;
+          if (cloudData.nodes && cloudData.nodes.length > 0) {
+            finalNodes = cloudData.nodes.map((cn) => {
+              const ln = localDb.nodes.find((n) => n.id === cn.id);
+              const localPref = typeof window !== 'undefined' ? localStorage.getItem(`graintrust_terminal_online_${cn.id}`) : null;
+              const isNodeOnline = localPref !== null 
+                ? localPref === 'true' 
+                : (ln?.status ? ln.status === 'ONLINE' : (cn.status === 'ONLINE'));
+              return {
+                ...cn,
+                status: isNodeOnline ? 'ONLINE' : 'OFFLINE',
+                is_online: isNodeOnline,
+                outbox_depth: ln?.outbox_depth !== undefined ? ln.outbox_depth : cn.outbox_depth,
+              };
+            });
+          }
           if (cloudData.registrations && cloudData.registrations.length > 0) finalRegs = cloudData.registrations;
           if (cloudData.auditLogs && cloudData.auditLogs.length > 0) finalAudit = cloudData.auditLogs;
         }
@@ -370,6 +390,19 @@ export default function App(): React.ReactElement {
         finalLots = [...seed.lots];
       }
 
+      // Ensure all finalNodes have normalized status and is_online properties matching local preferences
+      finalNodes = finalNodes.map((n) => {
+        const localPref = typeof window !== 'undefined' ? localStorage.getItem(`graintrust_terminal_online_${n.id}`) : null;
+        const isNodeOnline = localPref !== null 
+          ? localPref === 'true' 
+          : (n.status ? n.status === 'ONLINE' : (n.is_online ?? true));
+        return {
+          ...n,
+          status: isNodeOnline ? 'ONLINE' : 'OFFLINE',
+          is_online: isNodeOnline,
+        };
+      });
+
       // Keep local JSON database in sync as secondary fallback
       saveDatabase({
         cards: finalCards,
@@ -400,7 +433,9 @@ export default function App(): React.ReactElement {
       setNodes(finalNodes);
       if (nodeId === selectedNodeIdRef.current) {
         const curr = finalNodes.find((n) => n.id === nodeId) || finalNodes[0];
-        setIsOnline(curr.status === 'ONLINE');
+        if (curr) {
+          setIsOnline(curr.status === 'ONLINE');
+        }
       }
 
       setRegistrations(finalRegs);
@@ -439,7 +474,11 @@ export default function App(): React.ReactElement {
     selectedNodeIdRef.current = nodeId;
     setSelectedNodeId(nodeId);
     // Keep active card selection intact across distribution terminals
-    setIsOnline(nextNode?.status === 'ONLINE');
+    const localPref = typeof window !== 'undefined' ? localStorage.getItem(`graintrust_terminal_online_${nodeId}`) : null;
+    const isNodeOnline = localPref !== null 
+      ? localPref === 'true' 
+      : (nextNode?.status ? nextNode.status === 'ONLINE' : (nextNode?.is_online ?? true));
+    setIsOnline(isNodeOnline);
     setDistExecutionSummary(null);
     setDistCurrentState('ATTEMPT');
     setSyncNotice(null);
@@ -447,19 +486,27 @@ export default function App(): React.ReactElement {
 
   // Toggle Online/Offline
   const handleToggleOnline = async () => {
-    try {
-      const res = await safeFetchJson(`/api/v1/edge-nodes/${selectedNodeId}/toggle-online`, { method: 'POST' });
-      if (res.ok && res.data) {
-        setIsOnline(res.data.isOnline);
-      } else {
-        const toggleResult = await toggleNodeOnlineStatusAsync(selectedNodeId);
-        setIsOnline(toggleResult.isOnline);
-      }
-    } catch {
-      const toggleResult = await toggleNodeOnlineStatusAsync(selectedNodeId);
-      setIsOnline(toggleResult.isOnline);
+    const nextOnlineState = !isOnline;
+    setIsOnline(nextOnlineState);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(`graintrust_terminal_online_${selectedNodeId}`, String(nextOnlineState));
     }
-    await loadAllData(selectedCardId);
+
+    try {
+      await secureDb.nodes.where('id').equals(selectedNodeId).modify((node) => {
+        node.status = nextOnlineState ? 'ONLINE' : 'OFFLINE';
+        node.is_online = nextOnlineState;
+      });
+      toggleNodeOnlineStatus(selectedNodeId);
+    } catch (e) {
+      console.warn('[Storage] Error updating node status on toggle:', e);
+    }
+
+    try {
+      await safeFetchJson(`/api/v1/edge-nodes/${selectedNodeId}/toggle-online`, { method: 'POST' });
+    } catch {}
+
+    await loadAllData(selectedCardId, selectedNodeId);
   };
 
   // Submit Beneficiary Registration

@@ -136,14 +136,20 @@ export async function fetchCloudDataFromSupabase(): Promise<{
       status: Number(l.remaining_quantity) > 0 ? 'AVAILABLE' : 'DEPLETED',
     }));
 
-    const mappedNodes: NodeItem[] = (nodesRes.data || []).map((n: any) => ({
-      id: n.id,
-      name: n.name || n.id,
-      location: n.location || 'Fair Price Shop Depot',
-      is_online: n.status === 'ONLINE',
-      last_sync: n.last_heartbeat || new Date().toISOString(),
-      outbox_depth: Number(n.outbox_depth || 0),
-    }));
+    const mappedNodes: NodeItem[] = (nodesRes.data || []).map((n: any) => {
+      const isOnlineStatus = n.status === 'OFFLINE' ? false : (n.status === 'ONLINE' || n.status === 'ACTIVE' || n.is_online === true);
+      return {
+        id: n.id,
+        name: n.name || n.id,
+        public_key: n.public_key || `ed25519_pub_${n.id}`,
+        location: n.location || 'Fair Price Shop Depot',
+        status: isOnlineStatus ? 'ONLINE' : 'OFFLINE',
+        is_online: isOnlineStatus,
+        last_heartbeat: n.last_heartbeat || new Date().toISOString(),
+        last_sync: n.last_heartbeat || new Date().toISOString(),
+        outbox_depth: Number(n.outbox_depth || 0),
+      };
+    });
 
     const mappedRegs: RegistrationItem[] = (regsRes.data || []).map((r: any) => ({
       id: r.id,

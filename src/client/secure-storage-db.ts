@@ -520,10 +520,36 @@ export async function recordSyncAsync(nodeId: string): Promise<{ state: LocalDat
 export async function toggleNodeOnlineStatusAsync(nodeId: string): Promise<{ isOnline: boolean; state: LocalDatabaseState }> {
   let isOnline = true;
 
-  await secureDb.nodes.where('id').equals(nodeId).modify((node) => {
-    node.status = node.status === 'ONLINE' ? 'OFFLINE' : 'ONLINE';
-    isOnline = node.status === 'ONLINE';
+  const count = await secureDb.nodes.where('id').equals(nodeId).modify((node) => {
+    const nextStatus = node.status === 'ONLINE' ? 'OFFLINE' : 'ONLINE';
+    node.status = nextStatus;
+    node.is_online = nextStatus === 'ONLINE';
+    isOnline = nextStatus === 'ONLINE';
   });
+
+  if (count === 0) {
+    const existing = await secureDb.nodes.get(nodeId);
+    if (!existing) {
+      const seed = getInitialSeedDatabase();
+      const seedNode = seed.nodes.find((n) => n.id === nodeId) || {
+        id: nodeId,
+        name: nodeId === 'node-alpha-001' ? 'Sector 4 Community Depot' : 'Rural Outpost Station 9',
+        public_key: 'ed25519_pub_' + nodeId,
+        status: 'ONLINE' as const,
+        last_heartbeat: new Date().toISOString(),
+        outbox_depth: 0,
+        location: 'Fair Price Shop Depot',
+      };
+      isOnline = seedNode.status !== 'ONLINE';
+      seedNode.status = isOnline ? 'ONLINE' : 'OFFLINE';
+      seedNode.is_online = isOnline;
+      await secureDb.nodes.put(seedNode);
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(`graintrust_terminal_online_${nodeId}`, String(isOnline));
+  }
 
   const state = await getFullDecryptedState();
   return { isOnline, state };

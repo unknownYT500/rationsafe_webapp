@@ -39,6 +39,8 @@ export interface NodeItem {
   last_heartbeat: string;
   outbox_depth: number;
   location?: string;
+  is_online?: boolean;
+  last_sync?: string;
 }
 
 export interface RegistrationItem {
@@ -541,9 +543,14 @@ export function toggleNodeOnlineStatus(nodeId: string): { isOnline: boolean; sta
   const node = db.nodes.find((n) => n.id === nodeId);
   let isOnline = true;
   if (node) {
-    node.status = node.status === 'ONLINE' ? 'OFFLINE' : 'ONLINE';
-    isOnline = node.status === 'ONLINE';
+    const nextStatus = node.status === 'ONLINE' ? 'OFFLINE' : 'ONLINE';
+    node.status = nextStatus;
+    node.is_online = nextStatus === 'ONLINE';
+    isOnline = nextStatus === 'ONLINE';
+    saveDatabase(db);
   }
-  saveDatabase(db);
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(`graintrust_terminal_online_${nodeId}`, String(isOnline));
+  }
   return { isOnline, state: db };
 }
