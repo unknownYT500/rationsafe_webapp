@@ -1,4 +1,3 @@
-// src/client/App.tsx
 import React, { useState, useEffect, useRef } from 'react';
 import {
   CheckCircle,
@@ -28,6 +27,13 @@ import {
   Menu,
   X,
   Sliders,
+  Monitor,
+  Radio,
+  Eye,
+  EyeOff,
+  ShieldCheck,
+  Server,
+  Filter,
 } from 'lucide-react';
 import type { UserRole, TxnState, ReasonCode } from '../core/types.js';
 import {
@@ -39,6 +45,12 @@ import {
   insertRegistrationToSupabase,
   approveRegistrationInSupabase,
   recordDispenseInSupabase,
+  verifyAdminPasswordInSupabase,
+  updateAdminPasswordInSupabase,
+  upsertMachineTelemetryInSupabase,
+  fetchFleetTelemetryFromSupabase,
+  recordMachineEventLogInSupabase,
+  fetchMachineEventLogsFromSupabase,
 } from './supabase.js';
 import {
   loadDatabase,
@@ -50,12 +62,15 @@ import {
   recordDispense,
   recordSync,
   toggleNodeOnlineStatus,
+  PRESET_MACHINES,
   type LocalDatabaseState,
   type CardBeneficiary,
   type GrainLotItem,
   type NodeItem,
   type AuditLogItem,
   type RegistrationItem,
+  type MachineTelemetry,
+  type MachineEventLog,
 } from './local-storage-db.js';
 import {
   initializeAndMigrateDatabase,
@@ -218,7 +233,7 @@ function getRoleShortName(role: UserRole): string {
 
 export default function App(): React.ReactElement {
   const [activeTab, setActiveTab] = useState<
-    'distribution' | 'registrations' | 'edge-sync' | 'inventory' | 'audit-trail'
+    'distribution' | 'registrations' | 'edge-sync' | 'inventory' | 'audit-trail' | 'fleet-telemetry'
   >('distribution');
   const [activeRole, setActiveRole] = useState<UserRole>('DISTRIBUTION_OPERATOR');
   const [isOnline, setIsOnline] = useState<boolean>(() => {
@@ -232,6 +247,52 @@ export default function App(): React.ReactElement {
   const selectedNodeIdRef = useRef(selectedNodeId);
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState<boolean>(false);
   const dataRequestRef = useRef(0);
+
+  // Field Machine Identity (for 4-laptop demonstration)
+  const [currentMachineId, setCurrentMachineId] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('graintrust_machine_id') || 'MACH-01';
+    }
+    return 'MACH-01';
+  });
+  const [currentMachineName, setCurrentMachineName] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('graintrust_machine_name') || 'Laptop 1 (Depot Alpha - Kanpur Urban)';
+    }
+    return 'Laptop 1 (Depot Alpha - Kanpur Urban)';
+  });
+  const [sessionId] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const existing = sessionStorage.getItem('graintrust_session_id');
+      if (existing) return existing;
+      const gen = `SESS-${Date.now().toString(36).slice(-4)}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+      sessionStorage.setItem('graintrust_session_id', gen);
+      return gen;
+    }
+    return 'SESS-DEMO-01';
+  });
+
+  // Admin Central Password Authentication Modal State
+  const [adminAuthModalOpen, setAdminAuthModalOpen] = useState<boolean>(false);
+  const [adminPasswordInput, setAdminPasswordInput] = useState<string>('');
+  const [adminAuthLoading, setAdminAuthLoading] = useState<boolean>(false);
+  const [adminAuthError, setAdminAuthError] = useState<string | null>(null);
+  const [adminOfflineBlockedModal, setAdminOfflineBlockedModal] = useState<boolean>(false);
+
+  // Machine Switcher Modal State
+  const [machineModalOpen, setMachineModalOpen] = useState<boolean>(false);
+
+  // Fleet Telemetry & Central Logs State (for Administrator view)
+  const [fleetTelemetry, setFleetTelemetry] = useState<MachineTelemetry[]>([]);
+  const [machineLogs, setMachineLogs] = useState<MachineEventLog[]>([]);
+  const [fleetLoading, setFleetLoading] = useState<boolean>(false);
+  const [selectedMachineFilter, setSelectedMachineFilter] = useState<string>('ALL');
+  const [selectedLogTypeFilter, setSelectedLogTypeFilter] = useState<string>('ALL');
+
+  // Change Admin Password Modal State
+  const [changePasswordModalOpen, setChangePasswordModalOpen] = useState<boolean>(false);
+  const [newAdminPassword, setNewAdminPassword] = useState<string>('');
+  const [changePasswordStatus, setChangePasswordStatus] = useState<string | null>(null);
 
   useEffect(() => {
     currentActiveRole = activeRole;
@@ -374,6 +435,8 @@ export default function App(): React.ReactElement {
             allocated_qty: quota,
             consumed_qty: 0,
             remaining_qty: quota,
+            machine_id: (reg.data as any)?.machine_id || currentMachineId,
+            machine_name: (reg.data as any)?.machine_name || currentMachineName,
           };
           finalCards.unshift(reconstructedCard);
         }
@@ -384,6 +447,28 @@ export default function App(): React.ReactElement {
         const seed = getInitialSeedDatabase();
         finalCards = [...seed.cards];
       }
+
+      // Ensure every card has machine attribution for field isolation & admin collective ledger
+      finalCards = finalCards.map((c) => {
+        if (c.machine_id) return c;
+        if (c.id === 'card-demo-001' || c.id?.includes('mvpo')) {
+          return { ...c, machine_id: 'MACH-01', machine_name: 'Laptop 1 (Depot Alpha - Kanpur Urban)' };
+        }
+        if (c.id === 'card-demo-002') {
+          return { ...c, machine_id: 'MACH-02', machine_name: 'Laptop 2 (Outpost 9 - Bithoor Rural)' };
+        }
+        if (c.id === 'card-demo-003') {
+          return { ...c, machine_id: 'MACH-03', machine_name: 'Laptop 3 (Mobile POS Unit 3 - Ganga Ghat)' };
+        }
+        if (c.id === 'card-demo-004') {
+          return { ...c, machine_id: 'MACH-01', machine_name: 'Laptop 1 (Depot Alpha - Kanpur Urban)' };
+        }
+        if (c.id === 'card-demo-005') {
+          return { ...c, machine_id: 'MACH-02', machine_name: 'Laptop 2 (Outpost 9 - Bithoor Rural)' };
+        }
+        return { ...c, machine_id: 'MACH-01', machine_name: 'Laptop 1 (Depot Alpha - Kanpur Urban)' };
+      });
+
       if (finalNodes.length === 0) {
         const seed = getInitialSeedDatabase();
         finalNodes = [...seed.nodes];
@@ -486,11 +571,163 @@ export default function App(): React.ReactElement {
     };
   }, [selectedNodeId]);
 
+  // Machine-Specific Card Filtering vs. Admin Collective View
+  const fieldVisibleCards = cards.filter((c) => {
+    if (activeRole === 'ADMINISTRATOR') return true;
+    return !c.machine_id || c.machine_id === currentMachineId;
+  });
+
+  const displayedCards = activeRole === 'ADMINISTRATOR'
+    ? (selectedMachineFilter === 'ALL' ? cards : cards.filter((c) => c.machine_id === selectedMachineFilter))
+    : fieldVisibleCards;
+
+  const displayedRegistrations = activeRole === 'ADMINISTRATOR'
+    ? (selectedMachineFilter === 'ALL' ? registrations : registrations.filter((r) => (r.data as any)?.machine_id === selectedMachineFilter))
+    : registrations.filter((r) => !(r.data as any)?.machine_id || (r.data as any)?.machine_id === currentMachineId);
+
   // Active selected beneficiary card & terminal node
-  const activeBeneficiary = cards.find((c) => c.id === selectedCardId) || cards[0];
+  const activeBeneficiary = displayedCards.find((c) => c.id === selectedCardId) || displayedCards[0] || cards[0];
   const activeLot = lots.find((l) => l.id === distLotId) || lots[0];
   const activeNode = nodes.find((n) => n.id === selectedNodeId) || nodes[0];
   const nodeAccent = selectedNodeId.includes('beta') ? 'var(--amber-400)' : 'var(--cyan-400)';
+
+  // Telemetry Heartbeat to Supabase
+  useEffect(() => {
+    const sendHeartbeat = async () => {
+      if (!isOnline) return;
+      try {
+        const activeCardCount = cards.filter((c) => !c.machine_id || c.machine_id === currentMachineId).length;
+        await upsertMachineTelemetryInSupabase({
+          machine_id: currentMachineId,
+          session_id: sessionId,
+          machine_name: currentMachineName,
+          role: activeRole,
+          status: isOnline ? 'ONLINE' : 'OFFLINE',
+          is_online: isOnline,
+          last_ping: new Date().toISOString(),
+          outbox_count: pendingTokens.length,
+          disbursed_total: metrics?.total_grain_disbursed || 0,
+          cards_count: activeCardCount,
+          node_id: selectedNodeId,
+          location: PRESET_MACHINES.find((m) => m.id === currentMachineId)?.location || 'Fair Price Depot',
+        });
+      } catch (err) {
+        console.warn('[Telemetry] Heartbeat error:', err);
+      }
+    };
+
+    sendHeartbeat();
+    const interval = setInterval(sendHeartbeat, 15000);
+    return () => clearInterval(interval);
+  }, [isOnline, currentMachineId, currentMachineName, activeRole, pendingTokens.length, metrics, cards.length, selectedNodeId]);
+
+  // Refresh Fleet Data for Admin
+  const refreshFleetData = async () => {
+    setFleetLoading(true);
+    try {
+      const [telemetryData, logsData] = await Promise.all([
+        fetchFleetTelemetryFromSupabase(),
+        fetchMachineEventLogsFromSupabase(),
+      ]);
+
+      const mergedTelemetry: MachineTelemetry[] = PRESET_MACHINES.map((preset) => {
+        const live = telemetryData.find((t) => t.machine_id === preset.id);
+        if (live) return live;
+        return {
+          machine_id: preset.id,
+          session_id: preset.id === currentMachineId ? sessionId : 'SESS-STANDBY',
+          machine_name: preset.name,
+          role: preset.defaultRole,
+          status: preset.id === currentMachineId ? (isOnline ? 'ONLINE' : 'OFFLINE') : 'OFFLINE',
+          is_online: preset.id === currentMachineId ? isOnline : false,
+          last_ping: preset.id === currentMachineId ? new Date().toISOString() : 'Awaiting initialization',
+          outbox_count: preset.id === currentMachineId ? pendingTokens.length : 0,
+          disbursed_total: 0,
+          cards_count: cards.filter((c) => c.machine_id === preset.id).length,
+          node_id: preset.nodeId,
+          location: preset.location,
+        };
+      });
+
+      setFleetTelemetry(mergedTelemetry);
+      setMachineLogs(logsData);
+    } catch (err) {
+      console.warn('[Telemetry] Error refreshing fleet data:', err);
+    } finally {
+      setFleetLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'fleet-telemetry' || activeRole === 'ADMINISTRATOR') {
+      refreshFleetData();
+      const interval = setInterval(refreshFleetData, 8000);
+      return () => clearInterval(interval);
+    }
+  }, [activeTab, activeRole]);
+
+  // Role switcher handler with password modal gate for Administrator
+  const handleRoleChangeRequest = (newRole: UserRole) => {
+    if (newRole === 'ADMINISTRATOR') {
+      if (!isOnline) {
+        setAdminOfflineBlockedModal(true);
+        return;
+      }
+      setAdminPasswordInput('');
+      setAdminAuthError(null);
+      setAdminAuthModalOpen(true);
+      return;
+    }
+    setActiveRole(newRole);
+  };
+
+  const handleVerifyAdminPassword = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!adminPasswordInput) {
+      setAdminAuthError('Please enter the administrator password.');
+      return;
+    }
+    setAdminAuthLoading(true);
+    setAdminAuthError(null);
+
+    try {
+      const result = await verifyAdminPasswordInSupabase(adminPasswordInput);
+      if (result.success) {
+        setActiveRole('ADMINISTRATOR');
+        setAdminAuthModalOpen(false);
+        setAdminPasswordInput('');
+        await recordMachineEventLogInSupabase({
+          machine_id: currentMachineId,
+          session_id: sessionId,
+          machine_name: currentMachineName,
+          event_type: 'SUPERVISOR_OVERRIDE',
+          title: 'Administrator Access Granted',
+          message: `${currentMachineName} (${currentMachineId}) successfully unlocked Administrator Governance Hub with central Supabase credentials.`,
+          timestamp: new Date().toISOString(),
+        });
+        setActiveTab('fleet-telemetry');
+      } else {
+        setAdminAuthError(result.message || 'Incorrect administrator password. Access denied.');
+      }
+    } catch {
+      setAdminAuthError('Authentication request failed. Please check network connection.');
+    } finally {
+      setAdminAuthLoading(false);
+    }
+  };
+
+  const handleSelectMachineProfile = (presetId: string) => {
+    const preset = PRESET_MACHINES.find((p) => p.id === presetId);
+    if (!preset) return;
+    setCurrentMachineId(preset.id);
+    setCurrentMachineName(preset.name);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('graintrust_machine_id', preset.id);
+      localStorage.setItem('graintrust_machine_name', preset.name);
+    }
+    handleNodeChange(preset.nodeId);
+    setMachineModalOpen(false);
+  };
 
   const handleNodeChange = (nodeId: string) => {
     const nextNode = nodes.find((node) => node.id === nodeId);
@@ -515,6 +752,12 @@ export default function App(): React.ReactElement {
       localStorage.setItem(`graintrust_terminal_online_${selectedNodeId}`, String(nextOnlineState));
     }
 
+    // If switching to offline while in Administrator role, drop back to Supervisor for safety
+    if (!nextOnlineState && activeRole === 'ADMINISTRATOR') {
+      setActiveRole('SUPERVISOR');
+      alert('Administrator session suspended: The Administrator control panel cannot be operated in Offline Mode. Automatically switched to Field Supervisor.');
+    }
+
     try {
       await secureDb.nodes.where('id').equals(selectedNodeId).modify((node) => {
         node.status = nextOnlineState ? 'ONLINE' : 'OFFLINE';
@@ -529,6 +772,19 @@ export default function App(): React.ReactElement {
       await safeFetchJson(`/api/v1/edge-nodes/${selectedNodeId}/toggle-online`, { method: 'POST' });
     } catch {}
 
+    // Log machine transition event to Supabase
+    recordMachineEventLogInSupabase({
+      machine_id: currentMachineId,
+      session_id: sessionId,
+      machine_name: currentMachineName,
+      event_type: nextOnlineState ? 'MACHINE_ONLINE' : 'MACHINE_OFFLINE',
+      title: nextOnlineState ? 'Machine Reconnected Online' : 'Machine Switched to Offline',
+      message: nextOnlineState
+        ? `${currentMachineName} (${currentMachineId}) established live network handshake with central cloud ledger.`
+        : `${currentMachineName} (${currentMachineId}) switched to Offline Edge Mode. Operating autonomously on local cryptographic leases.`,
+      timestamp: new Date().toISOString(),
+    });
+
     await loadAllData(selectedCardId, selectedNodeId);
   };
 
@@ -538,30 +794,47 @@ export default function App(): React.ReactElement {
     setRegSubmitting(true);
     setRegFeedback(null);
 
+    const submissionData = {
+      ...regForm,
+      machine_id: currentMachineId,
+      machine_name: currentMachineName,
+    };
+
     try {
       const res = await safeFetchJson('/api/v1/registrations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...regForm, node_id: selectedNodeId }),
+        body: JSON.stringify({ ...submissionData, node_id: selectedNodeId }),
       });
       if (res.ok && res.data) {
-        await insertRegistrationToSupabase({ id: res.data.id, node_id: selectedNodeId, data: regForm });
+        await insertRegistrationToSupabase({ id: res.data.id, node_id: selectedNodeId, data: submissionData });
         setRegFeedback({
           type: 'success',
-          message: `Registration recorded for ${regForm.first_name} ${regForm.last_name}! Record ID: ${res.data.id}. Click "Verify" & "Approve" below to activate their card.`,
+          message: `Registration recorded at ${currentMachineName} for ${regForm.first_name} ${regForm.last_name}! Record ID: ${res.data.id}. Click "Verify" & "Approve" below to activate their card.`,
         });
       } else {
-        const { reg } = await recordRegistrationAsync(regForm, selectedNodeId);
-        await insertRegistrationToSupabase({ id: reg.id, node_id: selectedNodeId, data: regForm });
+        const { reg } = await recordRegistrationAsync(submissionData as any, selectedNodeId);
+        await insertRegistrationToSupabase({ id: reg.id, node_id: selectedNodeId, data: submissionData });
         setRegFeedback({
           type: 'success',
-          message: `Registration encrypted (AES-GCM-256) & saved for ${regForm.first_name} ${regForm.last_name}! Record ID: ${reg.id}. Click "Verify" & "Approve" below to activate their card.`,
+          message: `Registration encrypted (AES-GCM-256) & saved at ${currentMachineName} for ${regForm.first_name} ${regForm.last_name}! Record ID: ${reg.id}. Click "Verify" & "Approve" below to activate their card.`,
         });
       }
+
+      await recordMachineEventLogInSupabase({
+        machine_id: currentMachineId,
+        session_id: sessionId,
+        machine_name: currentMachineName,
+        event_type: 'CARD_ENROLLED',
+        title: 'New Beneficiary KYC Enrolled',
+        message: `${currentMachineName} (${currentMachineId}) enrolled citizen ${regForm.first_name} ${regForm.last_name} (${regForm.family_count} members, ${regForm.family_count * 10}kg quota).`,
+        timestamp: new Date().toISOString(),
+      });
+
       await loadAllData();
     } catch (err: any) {
-      const { reg } = await recordRegistrationAsync(regForm, selectedNodeId);
-      await insertRegistrationToSupabase({ id: reg.id, node_id: selectedNodeId, data: regForm });
+      const { reg } = await recordRegistrationAsync(submissionData as any, selectedNodeId);
+      await insertRegistrationToSupabase({ id: reg.id, node_id: selectedNodeId, data: submissionData });
       setRegFeedback({
         type: 'success',
         message: `Registration encrypted (AES-GCM-256) & saved for ${regForm.first_name} ${regForm.last_name}! Record ID: ${reg.id}. Click "Verify" & "Approve" below to activate.`,
@@ -826,6 +1099,23 @@ export default function App(): React.ReactElement {
       }
 
       await loadAllData(selectedCardId);
+
+      // Log dispense event to Supabase telemetry
+      recordMachineEventLogInSupabase({
+        machine_id: currentMachineId,
+        session_id: sessionId,
+        machine_name: currentMachineName,
+        event_type: 'DISPENSE',
+        title: `Dispensed ${distQuantity}kg ${distAllowFallback ? '(Supervisor Override)' : ''}`,
+        message: `${currentMachineName} (${currentMachineId}) dispensed ${distQuantity}kg grain to ${activeBeneficiary?.full_name} (${isOnline ? 'Online Central' : 'Offline Provisional'}).`,
+        timestamp: new Date().toISOString(),
+        details: {
+          card_id: activeBeneficiary?.id,
+          quantity: distQuantity,
+          lot_id: distLotId,
+          is_online: isOnline,
+        },
+      });
     } catch (e: any) {
       setDistCurrentState('FAIL_REASON');
       setDistExecutionSummary({
@@ -851,6 +1141,15 @@ export default function App(): React.ReactElement {
         setSyncNotice(
           `Batch Reconciliation Succeeded! Reconciled ${res.data.accepted_count || 0} tokens to the central ledger.`
         );
+        recordMachineEventLogInSupabase({
+          machine_id: currentMachineId,
+          session_id: sessionId,
+          machine_name: currentMachineName,
+          event_type: 'BATCH_SYNC',
+          title: `Batch Sync: Reconciled ${res.data.accepted_count || 0} Token(s)`,
+          message: `${currentMachineName} (${currentMachineId}) synced ${res.data.accepted_count || 0} token(s) to central cloud ledger.`,
+          timestamp: new Date().toISOString(),
+        });
       } else {
         const { reconciledCount, tokens } = await recordSyncAsync(selectedNodeId);
         
@@ -870,6 +1169,17 @@ export default function App(): React.ReactElement {
         setSyncNotice(
           `Batch Reconciliation Succeeded! Successfully synchronized ${reconciledCount} provisional token(s) to the central Supabase ledger.`
         );
+
+        recordMachineEventLogInSupabase({
+          machine_id: currentMachineId,
+          session_id: sessionId,
+          machine_name: currentMachineName,
+          event_type: 'BATCH_SYNC',
+          title: `Batch Sync: Reconciled ${reconciledCount} Token(s)`,
+          message: `${currentMachineName} (${currentMachineId}) synced ${reconciledCount} provisional offline token(s) to central cloud ledger.`,
+          timestamp: new Date().toISOString(),
+          details: { count: reconciledCount },
+        });
       }
       await loadAllData(selectedCardId);
     } catch (e: any) {
@@ -877,6 +1187,15 @@ export default function App(): React.ReactElement {
       setSyncNotice(
         `Batch Reconciliation Succeeded (Encrypted IndexedDB)! Reconciled ${reconciledCount} tokens to the persistent ledger.`
       );
+      recordMachineEventLogInSupabase({
+        machine_id: currentMachineId,
+        session_id: sessionId,
+        machine_name: currentMachineName,
+        event_type: 'BATCH_SYNC',
+        title: `Batch Sync: Reconciled ${reconciledCount} Token(s)`,
+        message: `${currentMachineName} (${currentMachineId}) reconciled ${reconciledCount} token(s) in local vault.`,
+        timestamp: new Date().toISOString(),
+      });
       await loadAllData(selectedCardId);
     } finally {
       setSyncLoading(false);
@@ -921,6 +1240,29 @@ export default function App(): React.ReactElement {
     setDistCurrentState('ATTEMPT');
     alert('Database refreshed to seed defaults under Encrypted IndexedDB successfully!');
     await loadAllData();
+  };
+  const handleUpdateAdminPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newAdminPassword || newAdminPassword.length < 4) {
+      setChangePasswordStatus('Password must be at least 4 characters long.');
+      return;
+    }
+    setChangePasswordStatus('Updating password in Supabase cloud...');
+    try {
+      const res = await updateAdminPasswordInSupabase(newAdminPassword);
+      if (res.success) {
+        setChangePasswordStatus('Admin password successfully updated in Supabase cloud!');
+        setTimeout(() => {
+          setChangePasswordModalOpen(false);
+          setNewAdminPassword('');
+          setChangePasswordStatus(null);
+        }, 1200);
+      } else {
+        setChangePasswordStatus(`Failed: ${res.message}`);
+      }
+    } catch {
+      setChangePasswordStatus('Network error while updating password.');
+    }
   };
 
   return (
@@ -967,6 +1309,43 @@ export default function App(): React.ReactElement {
             </span>
           </div>
 
+          {/* Machine Profile Identity Chip (4-Laptop Demo) */}
+          <button
+            type="button"
+            className="role-selector"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.45rem',
+              padding: '0.35rem 0.65rem',
+              borderRadius: 'var(--radius-md)',
+              border: '1px solid rgba(56, 189, 248, 0.4)',
+              background: 'rgba(15, 23, 42, 0.85)',
+              cursor: 'pointer',
+              color: 'var(--cyan-400)',
+            }}
+            onClick={() => setMachineModalOpen(true)}
+            title="Click to switch machine identity for multi-device demonstration (Laptop 1, 2, 3, 4)"
+          >
+            <Monitor size={14} />
+            <span style={{ fontSize: '0.74rem', fontWeight: 700 }}>{currentMachineId}:</span>
+            <span style={{ fontSize: '0.74rem', color: '#ffffff' }}>
+              {currentMachineName.split('(')[0].trim()}
+            </span>
+            <span
+              style={{
+                fontSize: '0.62rem',
+                fontFamily: 'var(--font-mono)',
+                background: 'rgba(56, 189, 248, 0.2)',
+                color: 'var(--cyan-400)',
+                padding: '1px 5px',
+                borderRadius: '4px',
+              }}
+            >
+              {sessionId}
+            </span>
+          </button>
+
           {/* Active Terminal Node */}
           <div className="role-selector">
             <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Terminal:</span>
@@ -997,12 +1376,12 @@ export default function App(): React.ReactElement {
           <div className="role-selector" style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
               <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Role:</span>
-              <select value={activeRole} onChange={(e) => setActiveRole(e.target.value as UserRole)}>
+              <select value={activeRole} onChange={(e) => handleRoleChangeRequest(e.target.value as UserRole)}>
                 <option value="DISTRIBUTION_OPERATOR">Distribution Operator</option>
                 <option value="REGISTRATION_OPERATOR">Registration Operator</option>
                 <option value="SUPERVISOR">Field Supervisor</option>
                 <option value="AUDITOR">Auditor</option>
-                <option value="ADMINISTRATOR">Administrator</option>
+                <option value="ADMINISTRATOR">Administrator 🔒 (Cloud Required)</option>
               </select>
             </div>
             <span style={{ fontSize: '0.66rem', color: activeRole === 'AUDITOR' ? 'var(--cyan-400)' : activeRole === 'ADMINISTRATOR' ? 'var(--rose-400)' : activeRole === 'SUPERVISOR' ? 'var(--emerald-400)' : 'var(--text-muted)' }}>
@@ -1194,6 +1573,24 @@ export default function App(): React.ReactElement {
                 <FileText size={16} />
                 <span>Audit Log & Verification</span>
               </button>
+              <button
+                type="button"
+                className={`drawer-nav-btn ${activeTab === 'fleet-telemetry' ? 'active' : ''}`}
+                onClick={() => {
+                  setMobileDrawerOpen(false);
+                  if (activeRole !== 'ADMINISTRATOR') {
+                    handleRoleChangeRequest('ADMINISTRATOR');
+                  } else {
+                    setActiveTab('fleet-telemetry');
+                  }
+                }}
+                style={{
+                  color: activeRole === 'ADMINISTRATOR' ? 'var(--rose-400)' : undefined,
+                }}
+              >
+                <Monitor size={16} />
+                <span>Rural Edge Fleet & Telemetry {activeRole !== 'ADMINISTRATOR' ? '🔒' : ''}</span>
+              </button>
             </div>
           </div>
 
@@ -1268,7 +1665,7 @@ export default function App(): React.ReactElement {
           onClick={() => setActiveTab('registrations')}
         >
           <Users size={16} />
-          <span>Beneficiary Cards ({cards.length})</span>
+          <span>Beneficiary Cards ({displayedCards.length})</span>
         </button>
         <button
           className={`nav-tab-btn ${activeTab === 'edge-sync' ? 'active' : ''}`}
@@ -1290,6 +1687,23 @@ export default function App(): React.ReactElement {
         >
           <FileText size={16} />
           <span>Immutable Audit Log</span>
+        </button>
+        <button
+          className={`nav-tab-btn ${activeTab === 'fleet-telemetry' ? 'active' : ''}`}
+          onClick={() => {
+            if (activeRole !== 'ADMINISTRATOR') {
+              handleRoleChangeRequest('ADMINISTRATOR');
+            } else {
+              setActiveTab('fleet-telemetry');
+            }
+          }}
+          style={{
+            borderLeft: activeRole === 'ADMINISTRATOR' ? '2px solid var(--rose-500)' : undefined,
+            color: activeTab === 'fleet-telemetry' ? '#ffffff' : activeRole === 'ADMINISTRATOR' ? 'var(--rose-400)' : undefined,
+          }}
+        >
+          <Monitor size={16} />
+          <span>Rural Edge Fleet & Telemetry {activeRole !== 'ADMINISTRATOR' ? '🔒' : ''}</span>
         </button>
       </nav>
 
@@ -1369,6 +1783,98 @@ export default function App(): React.ReactElement {
                 </button>
               </div>
             </div>
+            {/* Multi-Device Machine Isolation vs. Administrator Collective Notice */}
+            {activeRole === 'ADMINISTRATOR' ? (
+              <div
+                style={{
+                  background: 'rgba(244, 63, 94, 0.1)',
+                  border: '1px solid rgba(244, 63, 94, 0.3)',
+                  borderRadius: 'var(--radius-md)',
+                  padding: '0.65rem 1rem',
+                  marginBottom: '1.25rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  flexWrap: 'wrap',
+                  gap: '0.6rem',
+                  fontSize: '0.82rem',
+                  color: 'var(--rose-400)',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.55rem' }}>
+                  <ShieldCheck size={18} />
+                  <span>
+                    <strong>ADMINISTRATOR COLLECTIVE VIEW:</strong> Showing all <strong>{cards.length} cards</strong> across all 4 field laptops.
+                  </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Filter size={14} color="var(--text-muted)" />
+                  <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>Filter Machine:</span>
+                  <select
+                    value={selectedMachineFilter}
+                    onChange={(e) => setSelectedMachineFilter(e.target.value)}
+                    style={{
+                      background: '#090d16',
+                      border: '1px solid var(--border-subtle)',
+                      borderRadius: '4px',
+                      color: '#ffffff',
+                      fontSize: '0.74rem',
+                      padding: '3px 8px',
+                    }}
+                  >
+                    <option value="ALL">All Machines ({cards.length} cards)</option>
+                    {PRESET_MACHINES.map((pm) => (
+                      <option key={pm.id} value={pm.id}>
+                        {pm.id} - {pm.name.split('(')[0].trim()}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            ) : (
+              <div
+                style={{
+                  background: 'rgba(56, 189, 248, 0.08)',
+                  border: '1px solid rgba(56, 189, 248, 0.25)',
+                  borderRadius: 'var(--radius-md)',
+                  padding: '0.65rem 1rem',
+                  marginBottom: '1.25rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  flexWrap: 'wrap',
+                  gap: '0.6rem',
+                  fontSize: '0.82rem',
+                  color: 'var(--cyan-400)',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.55rem' }}>
+                  <Radio size={18} />
+                  <span>
+                    <strong>LOCAL MACHINE ISOLATION ACTIVE:</strong> Terminal <strong>{currentMachineId}</strong> ({currentMachineName.split('(')[0].trim()}).
+                    Only cards registered/assigned to this machine are visible ({displayedCards.length} of {cards.length} cards).
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMachineModalOpen(true)}
+                  style={{
+                    background: 'rgba(56, 189, 248, 0.15)',
+                    border: '1px solid var(--cyan-500)',
+                    borderRadius: '4px',
+                    color: 'var(--cyan-400)',
+                    fontSize: '0.72rem',
+                    padding: '3px 9px',
+                    cursor: 'pointer',
+                    fontWeight: 600,
+                  }}
+                  title="Switch machine identity for multi-laptop demo"
+                >
+                  Switch Laptop Profile
+                </button>
+              </div>
+            )}
+
             <div className="beneficiary-hero"
               style={{
                 background: 'linear-gradient(135deg, rgba(30, 41, 59, 0.8), rgba(15, 23, 42, 0.95))',
@@ -1407,6 +1913,7 @@ export default function App(): React.ReactElement {
                       Card ID: <code style={{ color: 'var(--cyan-400)', fontWeight: 700 }}>{activeBeneficiary?.id || 'N/A'}</code>
                       {' • '}Phone: <strong>{activeBeneficiary?.phone_number || 'N/A'}</strong>
                       {' • '}Family: <strong>{activeBeneficiary?.family_count || 1} members</strong>
+                      {' • '}Terminal: <strong style={{ color: 'var(--cyan-400)' }}>{activeBeneficiary?.machine_id || currentMachineId}</strong> ({activeBeneficiary?.machine_name ? activeBeneficiary.machine_name.split('(')[0].trim() : currentMachineName.split('(')[0].trim()})
                     </div>
                   </div>
                 </div>
@@ -1428,7 +1935,7 @@ export default function App(): React.ReactElement {
                     <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Switch Card:</span>
                     <select
                       className="hero-card-select"
-                      value={selectedCardId || (cards[0]?.id ?? '')}
+                      value={selectedCardId || (displayedCards[0]?.id ?? cards[0]?.id ?? '')}
                       onChange={(e) => {
                         const newId = e.target.value;
                         selectedCardIdRef.current = newId;
@@ -1446,9 +1953,9 @@ export default function App(): React.ReactElement {
                         border: 'none',
                       }}
                     >
-                      {(cards.length > 0 ? cards : getInitialSeedDatabase().cards).map((c) => (
+                      {(displayedCards.length > 0 ? displayedCards : (activeRole === 'ADMINISTRATOR' ? cards : fieldVisibleCards)).map((c) => (
                         <option key={c.id} value={c.id}>
-                          {c.full_name} ({c.remaining_qty}kg rem) - {c.id.slice(0, 16)}
+                          [{c.machine_id || 'MACH-01'}] {c.full_name} ({c.remaining_qty}kg rem) - {c.id.slice(0, 16)}
                         </option>
                       ))}
                     </select>
@@ -1886,7 +2393,11 @@ export default function App(): React.ReactElement {
                     <Award size={20} color="var(--emerald-400)" />
                     Beneficiary Registry & Card Issuance
                   </h2>
-                  <p className="panel-subtitle">Approving instantly activates card & switches web context</p>
+                  <p className="panel-subtitle">
+                    {activeRole === 'ADMINISTRATOR'
+                      ? `Administrator Global Registry: Showing all ${registrations.length} registrations across all field machines`
+                      : `Local Registry (${currentMachineId}): Showing registrations enrolled on this device (${displayedRegistrations.length} records)`}
+                  </p>
                 </div>
               </div>
 
@@ -1900,16 +2411,16 @@ export default function App(): React.ReactElement {
                     </tr>
                   </thead>
                   <tbody>
-                    {registrations.length === 0 ? (
+                    {displayedRegistrations.length === 0 ? (
                       <tr>
                         <td colSpan={3} style={{ textAlign: 'center', padding: '2.5rem 1rem', color: 'var(--text-muted)' }}>
                           <Users size={28} style={{ margin: '0 auto 0.5rem auto', opacity: 0.5, display: 'block' }} />
-                          <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>No registrations pending</div>
-                          <div style={{ fontSize: '0.78rem' }}>Enroll a citizen on the left to review and approve their card.</div>
+                          <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>No registrations for this machine</div>
+                          <div style={{ fontSize: '0.78rem' }}>Enroll a citizen on the left or switch machine profile to view records from other depots.</div>
                         </td>
                       </tr>
                     ) : (
-                      registrations.map((r) => (
+                      displayedRegistrations.map((r) => (
                         <tr key={r.id}>
                           <td>
                             <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>
@@ -1919,8 +2430,25 @@ export default function App(): React.ReactElement {
                             <div style={{ fontSize: '0.72rem', color: 'var(--text-dim)' }}>
                               {r.data.city}, {r.data.state}
                             </div>
-                            <div style={{ fontSize: '0.68rem', color: 'var(--cyan-400)', marginTop: '2px' }}>
-                              ID: <code>{r.id}</code>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '3px', flexWrap: 'wrap' }}>
+                              <span style={{ fontSize: '0.68rem', color: 'var(--cyan-400)' }}>
+                                ID: <code>{r.id.slice(0, 16)}</code>
+                              </span>
+                              <span
+                                style={{
+                                  fontSize: '0.65rem',
+                                  padding: '1px 5px',
+                                  borderRadius: '3px',
+                                  background: 'rgba(56, 189, 248, 0.15)',
+                                  color: 'var(--cyan-400)',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '3px',
+                                }}
+                              >
+                                <Monitor size={10} />
+                                {(r.data as any)?.machine_id || (r as any).machine_id || 'MACH-01'}
+                              </span>
                             </div>
                           </td>
                           <td>
@@ -2208,8 +2736,923 @@ export default function App(): React.ReactElement {
             </div>
           </div>
         )}
+
+        {/* TAB 6: RURAL EDGE FLEET SUPERVISION & TELEMETRY */}
+        {activeTab === 'fleet-telemetry' && (
+          <div>
+            {activeRole !== 'ADMINISTRATOR' ? (
+              <div
+                className="glass-panel"
+                style={{
+                  textAlign: 'center',
+                  padding: '3.5rem 1.5rem',
+                  maxWidth: '680px',
+                  margin: '2rem auto',
+                  border: '1px solid rgba(244, 63, 94, 0.3)',
+                }}
+              >
+                <div
+                  style={{
+                    width: '64px',
+                    height: '64px',
+                    borderRadius: '50%',
+                    background: 'rgba(244, 63, 94, 0.15)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    margin: '0 auto 1.25rem auto',
+                  }}
+                >
+                  <Lock size={32} color="var(--rose-400)" />
+                </div>
+                <h2 style={{ fontSize: '1.4rem', fontWeight: 800, color: '#ffffff', marginBottom: '0.6rem' }}>
+                  Administrator Access Required
+                </h2>
+                <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', lineHeight: 1.6, marginBottom: '1.75rem' }}>
+                  The Rural Edge Fleet & Telemetry Control Center provides live supervision, heartbeat monitoring, and collective beneficiary logs across all 4 deployed machines. Operator credentials must be authenticated as Administrator via Supabase cloud credentials.
+                </p>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  style={{
+                    background: 'linear-gradient(135deg, #e11d48, #be123c)',
+                    fontSize: '0.9rem',
+                    padding: '0.65rem 1.4rem',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                  }}
+                  onClick={() => handleRoleChangeRequest('ADMINISTRATOR')}
+                >
+                  <Key size={16} />
+                  <span>Authenticate as Administrator</span>
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                {/* Header Panel */}
+                <div className="glass-panel">
+                  <div className="panel-header" style={{ flexWrap: 'wrap', gap: '1rem' }}>
+                    <div>
+                      <h2 className="panel-title" style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                        <Monitor size={22} color="var(--rose-400)" />
+                        Rural Edge Fleet Supervision & Telemetry Control Center
+                      </h2>
+                      <p className="panel-subtitle">
+                        Central real-time monitoring of 4 deployed machines in rural depots, outbox synchronization, and collective beneficiary ledger.
+                      </p>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => setChangePasswordModalOpen(true)}
+                        style={{ fontSize: '0.78rem', padding: '0.4rem 0.8rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                      >
+                        <Key size={14} />
+                        <span>Change Supabase Master Password</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        onClick={refreshFleetData}
+                        disabled={fleetLoading}
+                        style={{ fontSize: '0.78rem', padding: '0.4rem 0.8rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                      >
+                        <RefreshCw size={14} className={fleetLoading ? 'animate-spin' : ''} />
+                        <span>{fleetLoading ? 'Refreshing...' : 'Refresh Fleet Telemetry'}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 4 Summary Metric Cards */}
+                  <div className="grid-4" style={{ marginTop: '0.5rem' }}>
+                    <div className="metric-box">
+                      <span className="metric-label">Deployed Terminals</span>
+                      <span className="metric-value" style={{ color: 'var(--cyan-400)' }}>4 Machines</span>
+                      <span className="metric-sub">Kanpur, Bithoor, Ganga Ghat, Admin Hub</span>
+                    </div>
+                    <div className="metric-box">
+                      <span className="metric-label">Online Fleet Pulse</span>
+                      <span className="metric-value" style={{ color: 'var(--emerald-400)' }}>
+                        {fleetTelemetry.filter((t) => t.is_online).length} of {fleetTelemetry.length || 4} Live
+                      </span>
+                      <span className="metric-sub">
+                        {fleetTelemetry.filter((t) => !t.is_online).length} operating in edge autonomous mode
+                      </span>
+                    </div>
+                    <div className="metric-box">
+                      <span className="metric-label">Collective Beneficiaries</span>
+                      <span className="metric-value" style={{ color: '#ffffff' }}>
+                        {cards.length} Cards
+                      </span>
+                      <span className="metric-sub">Aggregated across all rural laptops</span>
+                    </div>
+                    <div className="metric-box">
+                      <span className="metric-label">Global Grain Disbursed</span>
+                      <span className="metric-value" style={{ color: 'var(--amber-400)' }}>
+                        {(metrics?.total_grain_disbursed || 0).toLocaleString()} kg
+                      </span>
+                      <span className="metric-sub">Total verified ration disbursed</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Deployed Rural Machines Status Grid */}
+                <div className="glass-panel">
+                  <div className="panel-header">
+                    <div>
+                      <h3 className="panel-title" style={{ fontSize: '1.05rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <Server size={18} color="var(--cyan-400)" />
+                        Deployed Field Terminals (4-Laptop Hardware Profiles)
+                      </h3>
+                      <p className="panel-subtitle">
+                        Live hardware heartbeat, assigned operator role, network connectivity, and edge outbox depths.
+                      </p>
+                    </div>
+                    <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                      Auto-refreshes every 8 seconds via Supabase
+                    </span>
+                  </div>
+
+                  <div className="grid-2" style={{ gap: '1rem', marginTop: '0.5rem' }}>
+                    {fleetTelemetry.map((m) => {
+                      const isCurrentThisLaptop = m.machine_id === currentMachineId;
+                      return (
+                        <div
+                          key={m.machine_id}
+                          style={{
+                            background: isCurrentThisLaptop
+                              ? 'linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.95))'
+                              : 'rgba(15, 23, 42, 0.7)',
+                            border: isCurrentThisLaptop
+                              ? '1px solid var(--cyan-500)'
+                              : '1px solid var(--border-subtle)',
+                            borderRadius: 'var(--radius-md)',
+                            padding: '1.1rem 1.25rem',
+                            position: 'relative',
+                            boxShadow: isCurrentThisLaptop ? '0 0 16px rgba(56, 189, 248, 0.15)' : 'none',
+                          }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem' }}>
+                            <div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <span
+                                  style={{
+                                    fontSize: '0.72rem',
+                                    fontWeight: 800,
+                                    padding: '2px 8px',
+                                    borderRadius: '4px',
+                                    background: 'rgba(56, 189, 248, 0.2)',
+                                    color: 'var(--cyan-400)',
+                                    letterSpacing: '0.05em',
+                                  }}
+                                >
+                                  {m.machine_id}
+                                </span>
+                                <h4 style={{ fontSize: '0.95rem', fontWeight: 700, color: '#ffffff', margin: 0 }}>
+                                  {m.machine_name.split('(')[0].trim()}
+                                </h4>
+                                {isCurrentThisLaptop && (
+                                  <span
+                                    style={{
+                                      fontSize: '0.62rem',
+                                      padding: '1px 6px',
+                                      borderRadius: '999px',
+                                      background: 'rgba(16, 185, 129, 0.2)',
+                                      color: 'var(--emerald-400)',
+                                      fontWeight: 700,
+                                    }}
+                                  >
+                                    THIS DEVICE
+                                  </span>
+                                )}
+                              </div>
+                              <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+                                📍 {m.location}
+                              </div>
+                            </div>
+                            <span
+                              className={`badge ${m.is_online ? 'badge-reconciled' : 'badge-provisional'}`}
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
+                            >
+                              <span
+                                style={{
+                                  width: '7px',
+                                  height: '7px',
+                                  borderRadius: '50%',
+                                  background: m.is_online ? 'var(--emerald-400)' : 'var(--amber-400)',
+                                  boxShadow: m.is_online ? '0 0 8px var(--emerald-400)' : 'none',
+                                }}
+                              />
+                              {m.is_online ? 'ONLINE' : 'OFFLINE (EDGE)'}
+                            </span>
+                          </div>
+
+                          <div
+                            style={{
+                              display: 'grid',
+                              gridTemplateColumns: 'repeat(2, 1fr)',
+                              gap: '0.6rem',
+                              padding: '0.75rem',
+                              background: '#090d16',
+                              borderRadius: 'var(--radius-sm)',
+                              fontSize: '0.76rem',
+                              marginBottom: '0.75rem',
+                            }}
+                          >
+                            <div>
+                              <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '0.68rem' }}>Session ID:</span>
+                              <code style={{ color: 'var(--cyan-400)', fontSize: '0.72rem' }}>{m.session_id}</code>
+                            </div>
+                            <div>
+                              <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '0.68rem' }}>Role Mode:</span>
+                              <span style={{ fontWeight: 600, color: '#ffffff' }}>{getRoleShortName(m.role as UserRole)}</span>
+                            </div>
+                            <div>
+                              <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '0.68rem' }}>Outbox Depth:</span>
+                              <span style={{ fontWeight: 700, color: m.outbox_count > 0 ? 'var(--amber-400)' : 'var(--emerald-400)' }}>
+                                {m.outbox_count} offline tokens
+                              </span>
+                            </div>
+                            <div>
+                              <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '0.68rem' }}>Enrolled Cards:</span>
+                              <span style={{ fontWeight: 700, color: '#ffffff' }}>
+                                {cards.filter((c) => c.machine_id === m.machine_id).length} local cards
+                              </span>
+                            </div>
+                          </div>
+
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                            <span>
+                              Last Ping: <strong>{m.last_ping && m.last_ping.includes('T') ? new Date(m.last_ping).toLocaleTimeString() : m.last_ping}</strong>
+                            </span>
+                            {!isCurrentThisLaptop && (
+                              <button
+                                type="button"
+                                onClick={() => handleSelectMachineProfile(m.machine_id)}
+                                style={{
+                                  background: 'rgba(255, 255, 255, 0.05)',
+                                  border: '1px solid var(--border-subtle)',
+                                  borderRadius: '4px',
+                                  color: 'var(--text-main)',
+                                  fontSize: '0.7rem',
+                                  padding: '2px 8px',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                Simulate This Machine
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Central Machine Activity & Transition Logs */}
+                <div className="glass-panel">
+                  <div className="panel-header" style={{ flexWrap: 'wrap', gap: '1rem' }}>
+                    <div>
+                      <h3 className="panel-title" style={{ fontSize: '1.05rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <Activity size={18} color="var(--cyan-400)" />
+                        Multi-Machine Transition & Operational Step Logs
+                      </h3>
+                      <p className="panel-subtitle">
+                        Collective machine-wise audit: Machines toggling offline/online, edge dispenses, outbox syncs, and citizen enrolments.
+                      </p>
+                    </div>
+                    {/* Filters */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.75rem' }}>
+                        <Filter size={13} color="var(--text-muted)" />
+                        <span style={{ color: 'var(--text-muted)' }}>Terminal:</span>
+                        <select
+                          value={selectedMachineFilter}
+                          onChange={(e) => setSelectedMachineFilter(e.target.value)}
+                          style={{
+                            background: '#090d16',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: '4px',
+                            color: '#ffffff',
+                            fontSize: '0.74rem',
+                            padding: '3px 8px',
+                          }}
+                        >
+                          <option value="ALL">All Machines</option>
+                          {PRESET_MACHINES.map((pm) => (
+                            <option key={pm.id} value={pm.id}>
+                              {pm.id} - {pm.name.split('(')[0].trim()}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.75rem' }}>
+                        <span style={{ color: 'var(--text-muted)' }}>Event Type:</span>
+                        <select
+                          value={selectedLogTypeFilter}
+                          onChange={(e) => setSelectedLogTypeFilter(e.target.value)}
+                          style={{
+                            background: '#090d16',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: '4px',
+                            color: '#ffffff',
+                            fontSize: '0.74rem',
+                            padding: '3px 8px',
+                          }}
+                        >
+                          <option value="ALL">All Events</option>
+                          <option value="MACHINE_OFFLINE">Machine Offline Transitions</option>
+                          <option value="MACHINE_ONLINE">Machine Online Restorations</option>
+                          <option value="DISPENSE">Ration Dispenses</option>
+                          <option value="BATCH_SYNC">Batch Reconciliations</option>
+                          <option value="CARD_ENROLLED">Citizen KYC Enrolments</option>
+                          <option value="SUPERVISOR_OVERRIDE">Admin / Supervisor Auth</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="data-table-wrapper" style={{ maxHeight: '420px', overflowY: 'auto' }}>
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Timestamp</th>
+                          <th>Origin Terminal</th>
+                          <th>Event Action</th>
+                          <th>Session ID</th>
+                          <th>Operational Details</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {machineLogs
+                          .filter((l) => (selectedMachineFilter === 'ALL' ? true : l.machine_id === selectedMachineFilter))
+                          .filter((l) => (selectedLogTypeFilter === 'ALL' ? true : l.event_type === selectedLogTypeFilter))
+                          .length === 0 ? (
+                          <tr>
+                            <td colSpan={5} style={{ textAlign: 'center', padding: '2.5rem 1rem', color: 'var(--text-muted)' }}>
+                              <Activity size={26} style={{ margin: '0 auto 0.5rem auto', opacity: 0.5, display: 'block' }} />
+                              <div style={{ fontWeight: 600, fontSize: '0.88rem' }}>No telemetry logs matching selected filters</div>
+                              <div style={{ fontSize: '0.76rem' }}>Events will stream here automatically as laptops operate and sync.</div>
+                            </td>
+                          </tr>
+                        ) : (
+                          machineLogs
+                            .filter((l) => (selectedMachineFilter === 'ALL' ? true : l.machine_id === selectedMachineFilter))
+                            .filter((l) => (selectedLogTypeFilter === 'ALL' ? true : l.event_type === selectedLogTypeFilter))
+                            .map((log) => {
+                              const badgeStyle =
+                                log.event_type === 'MACHINE_OFFLINE'
+                                  ? { background: 'rgba(244, 63, 94, 0.15)', color: 'var(--rose-400)', border: '1px solid var(--rose-500)' }
+                                  : log.event_type === 'MACHINE_ONLINE'
+                                  ? { background: 'rgba(16, 185, 129, 0.15)', color: 'var(--emerald-400)', border: '1px solid var(--emerald-500)' }
+                                  : log.event_type === 'BATCH_SYNC'
+                                  ? { background: 'rgba(56, 189, 248, 0.15)', color: 'var(--cyan-400)', border: '1px solid var(--cyan-500)' }
+                                  : log.event_type === 'DISPENSE'
+                                  ? { background: 'rgba(245, 158, 11, 0.15)', color: 'var(--amber-400)', border: '1px solid var(--amber-500)' }
+                                  : { background: 'rgba(168, 85, 247, 0.15)', color: '#c084fc', border: '1px solid #a855f7' };
+
+                              return (
+                                <tr key={log.id}>
+                                  <td style={{ fontSize: '0.74rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                                    {new Date(log.timestamp).toLocaleTimeString()}
+                                  </td>
+                                  <td>
+                                    <div style={{ fontWeight: 700, fontSize: '0.82rem', color: '#ffffff' }}>
+                                      {log.machine_id}
+                                    </div>
+                                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                                      {log.machine_name.split('(')[0].trim()}
+                                    </div>
+                                  </td>
+                                  <td>
+                                    <span
+                                      style={{
+                                        fontSize: '0.68rem',
+                                        fontWeight: 700,
+                                        padding: '2px 8px',
+                                        borderRadius: '4px',
+                                        display: 'inline-block',
+                                        ...badgeStyle,
+                                      }}
+                                    >
+                                      {log.event_type.replace('_', ' ')}
+                                    </span>
+                                  </td>
+                                  <td>
+                                    <code style={{ fontSize: '0.72rem', color: 'var(--cyan-400)' }}>{log.session_id}</code>
+                                  </td>
+                                  <td>
+                                    <div style={{ fontSize: '0.82rem', fontWeight: 600, color: '#ffffff' }}>
+                                      {log.title}
+                                    </div>
+                                    <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                                      {log.message}
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Collective Multi-Machine Beneficiary Cards Ledger */}
+                <div className="glass-panel">
+                  <div className="panel-header">
+                    <div>
+                      <h3 className="panel-title" style={{ fontSize: '1.05rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <CreditCard size={18} color="var(--emerald-400)" />
+                        Collective Beneficiary Ledger Across All Machines ({cards.length} Total)
+                      </h3>
+                      <p className="panel-subtitle">
+                        Administrator aggregate view: While individual rural laptops only display local cards, the central Administrator has holistic visibility.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="data-table-wrapper" style={{ maxHeight: '380px', overflowY: 'auto' }}>
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Citizen Name</th>
+                          <th>Card ID</th>
+                          <th>Origin Terminal</th>
+                          <th>Quota Allocation</th>
+                          <th>Remaining Balance</th>
+                          <th>Card Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {cards.map((c) => (
+                          <tr key={c.id}>
+                            <td style={{ fontWeight: 700 }}>{c.full_name}</td>
+                            <td>
+                              <code style={{ fontSize: '0.74rem', color: 'var(--cyan-400)' }}>{c.id}</code>
+                            </td>
+                            <td>
+                              <span
+                                style={{
+                                  fontSize: '0.72rem',
+                                  padding: '2px 8px',
+                                  borderRadius: '4px',
+                                  background: 'rgba(56, 189, 248, 0.15)',
+                                  color: 'var(--cyan-400)',
+                                  fontWeight: 600,
+                                }}
+                              >
+                                {c.machine_id || 'MACH-01'} ({c.machine_name ? c.machine_name.split('(')[0].trim() : 'Laptop 1'})
+                              </span>
+                            </td>
+                            <td>{c.allocated_qty} kg</td>
+                            <td style={{ fontWeight: 800, color: 'var(--emerald-400)' }}>
+                              {c.remaining_qty} kg
+                            </td>
+                            <td>
+                              <span className="badge badge-reconciled">{c.status}</span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </main>
+
+      {/* MODAL 1: Admin Central Password Authentication Modal */}
+      {adminAuthModalOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(5, 8, 16, 0.85)',
+            backdropFilter: 'blur(8px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+            padding: '1rem',
+          }}
+        >
+          <div
+            style={{
+              background: '#0e1626',
+              border: '1px solid rgba(244, 63, 94, 0.4)',
+              borderRadius: 'var(--radius-lg)',
+              padding: '1.75rem',
+              maxWidth: '440px',
+              width: '100%',
+              boxShadow: '0 20px 40px rgba(0, 0, 0, 0.7)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+              <div
+                style={{
+                  width: '44px',
+                  height: '44px',
+                  borderRadius: '50%',
+                  background: 'rgba(244, 63, 94, 0.15)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <ShieldCheck size={24} color="var(--rose-400)" />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '1.15rem', fontWeight: 800, color: '#ffffff', margin: 0 }}>
+                  Administrator Access
+                </h3>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  Centralized Supabase Cloud Authentication
+                </span>
+              </div>
+            </div>
+
+            <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: '1.25rem' }}>
+              Please enter the central master administrator password. Credentials are encrypted and verified against Supabase cloud storage to prevent edge terminal privilege escalation.
+            </p>
+
+            {adminAuthError && (
+              <div
+                style={{
+                  background: 'rgba(244, 63, 94, 0.15)',
+                  border: '1px solid var(--rose-500)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '0.65rem 0.85rem',
+                  fontSize: '0.78rem',
+                  color: 'var(--rose-400)',
+                  marginBottom: '1rem',
+                }}
+              >
+                {adminAuthError}
+              </div>
+            )}
+
+            <form onSubmit={handleVerifyAdminPassword}>
+              <div className="form-group" style={{ marginBottom: '1rem' }}>
+                <label className="form-label">Master Administrator Password</label>
+                <input
+                  type="password"
+                  className="form-input"
+                  placeholder="Enter administrator password..."
+                  value={adminPasswordInput}
+                  onChange={(e) => setAdminPasswordInput(e.target.value)}
+                  autoFocus
+                />
+                <div
+                  style={{
+                    fontSize: '0.72rem',
+                    color: 'var(--text-muted)',
+                    marginTop: '0.4rem',
+                    background: 'rgba(56, 189, 248, 0.08)',
+                    padding: '4px 8px',
+                    borderRadius: '4px',
+                  }}
+                >
+                  Demo Central Master Password: <code style={{ color: 'var(--cyan-400)', fontWeight: 700 }}>admin2026</code>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1.25rem' }}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ flex: 1, padding: '0.55rem' }}
+                  onClick={() => {
+                    setAdminAuthModalOpen(false);
+                    setAdminPasswordInput('');
+                    setAdminAuthError(null);
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  style={{
+                    flex: 1,
+                    padding: '0.55rem',
+                    background: 'linear-gradient(135deg, #e11d48, #be123c)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '0.4rem',
+                  }}
+                  disabled={adminAuthLoading}
+                >
+                  {adminAuthLoading ? 'Verifying...' : 'Unlock Admin Hub'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 2: Admin Offline Blocked Notice Modal */}
+      {adminOfflineBlockedModal && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(5, 8, 16, 0.85)',
+            backdropFilter: 'blur(8px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+            padding: '1rem',
+          }}
+        >
+          <div
+            style={{
+              background: '#0e1626',
+              border: '1px solid rgba(245, 158, 11, 0.5)',
+              borderRadius: 'var(--radius-lg)',
+              padding: '1.75rem',
+              maxWidth: '460px',
+              width: '100%',
+              boxShadow: '0 20px 40px rgba(0, 0, 0, 0.7)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+              <div
+                style={{
+                  width: '44px',
+                  height: '44px',
+                  borderRadius: '50%',
+                  background: 'rgba(245, 158, 11, 0.15)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <AlertTriangle size={24} color="var(--amber-400)" />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '1.15rem', fontWeight: 800, color: '#ffffff', margin: 0 }}>
+                  Admin Locked in Offline Mode
+                </h3>
+                <span style={{ fontSize: '0.75rem', color: 'var(--amber-400)' }}>
+                  Security Protocol Enforcement
+                </span>
+              </div>
+            </div>
+
+            <p style={{ fontSize: '0.84rem', color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: '1rem' }}>
+              <strong>Access Denied:</strong> In Offline Autonomous Mode, the Administrator control panel cannot be accessed. Central Supabase cloud authentication is strictly mandated to verify root administrator privileges.
+            </p>
+
+            <div
+              style={{
+                background: '#090d16',
+                borderRadius: 'var(--radius-sm)',
+                padding: '0.75rem 1rem',
+                fontSize: '0.76rem',
+                color: 'var(--text-muted)',
+                marginBottom: '1.25rem',
+                borderLeft: '3px solid var(--amber-400)',
+              }}
+            >
+              Edge terminals without network connectivity must operate under <strong>Field Supervisor</strong> or <strong>Distribution Operator</strong> roles using local cryptographic leases.
+            </div>
+
+            <div style={{ display: 'flex', gap: '0.75rem' }}>
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ flex: 1, padding: '0.55rem' }}
+                onClick={() => setAdminOfflineBlockedModal(false)}
+              >
+                Continue Offline as Field Operator
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                style={{ flex: 1, padding: '0.55rem' }}
+                onClick={() => {
+                  setAdminOfflineBlockedModal(false);
+                  handleToggleOnline();
+                  setTimeout(() => {
+                    handleRoleChangeRequest('ADMINISTRATOR');
+                  }, 400);
+                }}
+              >
+                Switch Online & Login
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 3: Hardware Profile Switcher for 4-Laptop Demo */}
+      {machineModalOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(5, 8, 16, 0.85)',
+            backdropFilter: 'blur(8px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+            padding: '1rem',
+          }}
+        >
+          <div
+            style={{
+              background: '#0e1626',
+              border: '1px solid rgba(56, 189, 248, 0.4)',
+              borderRadius: 'var(--radius-lg)',
+              padding: '1.75rem',
+              maxWidth: '560px',
+              width: '100%',
+              boxShadow: '0 20px 40px rgba(0, 0, 0, 0.7)',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.25rem' }}>
+              <div>
+                <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#ffffff', margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <Monitor size={20} color="var(--cyan-400)" />
+                  Terminal Hardware Identity (4-Laptop Demo)
+                </h3>
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+                  Select which physical machine this browser represents. Each machine operates with isolated customer cards and distinct outbox logs.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMachineModalOpen(false)}
+                style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1.25rem' }}>
+              {PRESET_MACHINES.map((preset) => {
+                const isSelected = preset.id === currentMachineId;
+                return (
+                  <div
+                    key={preset.id}
+                    onClick={() => handleSelectMachineProfile(preset.id)}
+                    style={{
+                      background: isSelected ? 'rgba(56, 189, 248, 0.15)' : '#090d16',
+                      border: isSelected ? '2px solid var(--cyan-500)' : '1px solid var(--border-subtle)',
+                      borderRadius: 'var(--radius-md)',
+                      padding: '0.85rem 1rem',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      transition: 'all 0.2s ease',
+                    }}
+                  >
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <span
+                          style={{
+                            fontSize: '0.72rem',
+                            fontWeight: 800,
+                            padding: '2px 7px',
+                            borderRadius: '4px',
+                            background: isSelected ? 'var(--cyan-500)' : 'rgba(255, 255, 255, 0.1)',
+                            color: isSelected ? '#000000' : 'var(--cyan-400)',
+                          }}
+                        >
+                          {preset.id}
+                        </span>
+                        <strong style={{ color: '#ffffff', fontSize: '0.9rem' }}>
+                          {preset.name}
+                        </strong>
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+                        📍 {preset.location} · Default Role: <strong>{getRoleShortName(preset.defaultRole)}</strong>
+                      </div>
+                    </div>
+                    {isSelected ? (
+                      <span className="badge badge-reconciled">ACTIVE NOW</span>
+                    ) : (
+                      <span style={{ fontSize: '0.74rem', color: 'var(--cyan-400)' }}>Select →</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ padding: '0.45rem 1rem', fontSize: '0.8rem' }}
+                onClick={() => setMachineModalOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 4: Central Password Update Modal */}
+      {changePasswordModalOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(5, 8, 16, 0.85)',
+            backdropFilter: 'blur(8px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+            padding: '1rem',
+          }}
+        >
+          <div
+            style={{
+              background: '#0e1626',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 'var(--radius-lg)',
+              padding: '1.75rem',
+              maxWidth: '440px',
+              width: '100%',
+              boxShadow: '0 20px 40px rgba(0, 0, 0, 0.7)',
+            }}
+          >
+            <h3 style={{ fontSize: '1.15rem', fontWeight: 800, color: '#ffffff', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Key size={18} color="var(--rose-400)" />
+              Update Supabase Master Password
+            </h3>
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: '1rem' }}>
+              Centrally update the administrator password in the Supabase database. All laptops attempting administrator authentication will require this new password.
+            </p>
+
+            {changePasswordStatus && (
+              <div
+                style={{
+                  background: changePasswordStatus.includes('success') ? 'rgba(16, 185, 129, 0.15)' : 'rgba(244, 63, 94, 0.15)',
+                  border: `1px solid ${changePasswordStatus.includes('success') ? 'var(--emerald-500)' : 'var(--rose-500)'}`,
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '0.65rem 0.85rem',
+                  fontSize: '0.78rem',
+                  color: changePasswordStatus.includes('success') ? 'var(--emerald-400)' : 'var(--rose-400)',
+                  marginBottom: '1rem',
+                }}
+              >
+                {changePasswordStatus}
+              </div>
+            )}
+
+            <form onSubmit={handleUpdateAdminPassword}>
+              <div className="form-group" style={{ marginBottom: '1.25rem' }}>
+                <label className="form-label">New Administrator Password</label>
+                <input
+                  type="password"
+                  className="form-input"
+                  placeholder="Enter new master password (min 4 chars)..."
+                  value={newAdminPassword}
+                  onChange={(e) => setNewAdminPassword(e.target.value)}
+                  autoFocus
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: '0.75rem' }}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ flex: 1, padding: '0.55rem' }}
+                  onClick={() => {
+                    setChangePasswordModalOpen(false);
+                    setNewAdminPassword('');
+                    setChangePasswordStatus(null);
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  style={{ flex: 1, padding: '0.55rem' }}
+                >
+                  Update Password
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+
 

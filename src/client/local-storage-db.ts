@@ -21,7 +21,67 @@ export interface CardBeneficiary {
   allocated_qty: number;
   consumed_qty: number;
   remaining_qty: number;
+  machine_id?: string;
+  machine_name?: string;
 }
+
+export interface MachineTelemetry {
+  machine_id: string;
+  session_id: string;
+  machine_name: string;
+  role: string;
+  status: 'ONLINE' | 'OFFLINE';
+  is_online: boolean;
+  last_ping: string;
+  outbox_count: number;
+  disbursed_total: number;
+  cards_count: number;
+  node_id: string;
+  location: string;
+}
+
+export interface MachineEventLog {
+  id: string;
+  machine_id: string;
+  session_id: string;
+  machine_name: string;
+  event_type: 'MACHINE_OFFLINE' | 'MACHINE_ONLINE' | 'BATCH_SYNC' | 'DISPENSE' | 'CARD_ENROLLED' | 'SUPERVISOR_OVERRIDE';
+  title: string;
+  message: string;
+  timestamp: string;
+  details?: any;
+}
+
+export const PRESET_MACHINES = [
+  {
+    id: 'MACH-01',
+    name: 'Laptop 1 (Depot Alpha - Kanpur Urban)',
+    location: 'Kanpur Urban Sector 4',
+    nodeId: 'node-alpha-001',
+    defaultRole: 'DISTRIBUTION_OPERATOR',
+  },
+  {
+    id: 'MACH-02',
+    name: 'Laptop 2 (Outpost 9 - Bithoor Rural)',
+    location: 'Bithoor Rural Block 9',
+    nodeId: 'node-beta-002',
+    defaultRole: 'DISTRIBUTION_OPERATOR',
+  },
+  {
+    id: 'MACH-03',
+    name: 'Laptop 3 (Mobile POS Unit 3 - Ganga Ghat)',
+    location: 'Ganga Ghat Fair Price Post',
+    nodeId: 'node-alpha-001',
+    defaultRole: 'REGISTRATION_OPERATOR',
+  },
+  {
+    id: 'MACH-04',
+    name: 'Laptop 4 (Central Governance & Command Hub)',
+    location: 'State Command Center',
+    nodeId: 'node-alpha-001',
+    defaultRole: 'ADMINISTRATOR',
+  },
+];
 
 export interface GrainLotItem {
   id: string;
@@ -172,6 +232,8 @@ export function getInitialSeedDatabase(): LocalDatabaseState {
       allocated_qty: 20,
       consumed_qty: 5,
       remaining_qty: 15,
+      machine_id: 'MACH-01',
+      machine_name: 'Laptop 1 (Depot Alpha - Kanpur Urban)',
     },
     {
       id: 'card-demo-002',
@@ -189,6 +251,8 @@ export function getInitialSeedDatabase(): LocalDatabaseState {
       allocated_qty: 15,
       consumed_qty: 10,
       remaining_qty: 5,
+      machine_id: 'MACH-02',
+      machine_name: 'Laptop 2 (Outpost 9 - Bithoor Rural)',
     },
     {
       id: 'card-demo-003',
@@ -206,6 +270,46 @@ export function getInitialSeedDatabase(): LocalDatabaseState {
       allocated_qty: 25,
       consumed_qty: 0,
       remaining_qty: 25,
+      machine_id: 'MACH-03',
+      machine_name: 'Laptop 3 (Mobile POS Unit 3 - Ganga Ghat)',
+    },
+    {
+      id: 'card-demo-004',
+      person_id: 'person-004',
+      status: 'ACTIVE',
+      issued_at: '2026-10-13T10:00:00Z',
+      first_name: 'Fatima',
+      last_name: 'Sheikh',
+      full_name: 'Fatima Sheikh',
+      phone_number: '+91 98223 34455',
+      family_count: 3,
+      address: 'Block C, Sector 4',
+      city: 'Kanpur',
+      state: 'Uttar Pradesh',
+      allocated_qty: 30,
+      consumed_qty: 0,
+      remaining_qty: 30,
+      machine_id: 'MACH-01',
+      machine_name: 'Laptop 1 (Depot Alpha - Kanpur Urban)',
+    },
+    {
+      id: 'card-demo-005',
+      person_id: 'person-005',
+      status: 'ACTIVE',
+      issued_at: '2026-10-14T14:20:00Z',
+      first_name: 'Vikram',
+      last_name: 'Singh',
+      full_name: 'Vikram Singh',
+      phone_number: '+91 98334 55667',
+      family_count: 4,
+      address: 'Rural Post 9',
+      city: 'Bithoor',
+      state: 'Uttar Pradesh',
+      allocated_qty: 30,
+      consumed_qty: 0,
+      remaining_qty: 30,
+      machine_id: 'MACH-02',
+      machine_name: 'Laptop 2 (Outpost 9 - Bithoor Rural)',
     },
   ];
 

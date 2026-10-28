@@ -1,13 +1,21 @@
 // src/client/supabase.ts
 import { createClient, type RealtimeChannel } from '@supabase/supabase-js';
-import type { CardBeneficiary, GrainLotItem, NodeItem, RegistrationItem, AuditLogItem } from './local-storage-db.js';
+import type {
+  CardBeneficiary,
+  GrainLotItem,
+  NodeItem,
+  RegistrationItem,
+  AuditLogItem,
+  MachineTelemetry,
+  MachineEventLog,
+} from './local-storage-db.js';
 
 const DEFAULT_SUPABASE_URL = 'https://byxvxvsvhiyeryavgafx.supabase.co';
 const DEFAULT_SUPABASE_ANON_KEY =
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ5eHZ4dnN2aGl5ZXJ5YXZnYWZ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIwNzU3MjksImV4cCI6MjEwNzY1MTcyOX0.UU-Qs8cO4bcDZ-5qZA9xgEDRjLY1IDr65ZMaoyK3AsA';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || DEFAULT_SUPABASE_ANON_KEY;
+const supabaseUrl = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_URL) || DEFAULT_SUPABASE_URL;
+const supabaseAnonKey = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_ANON_KEY) || DEFAULT_SUPABASE_ANON_KEY;
 
 export const isSupabaseConfigured = Boolean(
   supabaseUrl &&
@@ -123,6 +131,8 @@ export async function fetchCloudDataFromSupabase(): Promise<{
         allocated_qty: allocated,
         consumed_qty: consumed,
         remaining_qty: remaining,
+        machine_id: c.machine_id || person.machine_id || (c.id?.includes('mvpo') ? 'MACH-01' : undefined),
+        machine_name: c.machine_name || person.machine_name || (c.id?.includes('mvpo') ? 'Laptop 1 (Depot Alpha - Kanpur Urban)' : undefined),
       };
     });
 
@@ -159,16 +169,24 @@ export async function fetchCloudDataFromSupabase(): Promise<{
       };
     });
 
-    const mappedRegs: RegistrationItem[] = (regsRes.data || []).map((r: any) => ({
-      id: r.id,
-      status: r.status,
-      node_id: r.node_id,
-      person_id: r.person_id,
-      card_id: r.card_id,
-      data: r.data || {},
-      created_at: r.created_at,
-      updated_at: r.updated_at,
-    }));
+    const mappedRegs: RegistrationItem[] = (regsRes.data || [])
+      .filter((r: any) =>
+        !r.id.startsWith('config_') &&
+        !r.id.startsWith('mach_') &&
+        r.data?.type !== 'MACHINE_TELEMETRY' &&
+        r.data?.type !== 'MACHINE_EVENT_LOG' &&
+        r.data?.type !== 'SYSTEM_ADMIN_CONFIG'
+      )
+      .map((r: any) => ({
+        id: r.id,
+        status: r.status,
+        node_id: r.node_id,
+        person_id: r.person_id,
+        card_id: r.card_id,
+        data: r.data || {},
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+      }));
 
     const mappedAudit: AuditLogItem[] = (auditRes.data || []).map((a: any) => ({
       id: a.id,
@@ -363,3 +381,166 @@ export async function recordDispenseInSupabase(
     return false;
   }
 }
+
+/**
+ * Centrally authenticates the Administrator password against Supabase.
+ * In offline mode, the caller must block access.
+ */
+export async function verifyAdminPasswordInSupabase(password: string): Promise<{ success: boolean; message?: string }> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { success: false, message: 'Cloud security ledger not configured.' };
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('registrations')
+      .select('data')
+      .eq('id', 'config_admin_credentials')
+      .maybeSingle();
+
+    if (error) {
+      console.warn('[Supabase] Verify admin error:', error.message);
+      // Fallback check
+      return { success: password === 'admin2026', message: password === 'admin2026' ? undefined : 'Incorrect password.' };
+    }
+
+    const storedHash = data?.data?.password_hash || 'admin2026';
+    if (password === storedHash) {
+      return { success: true };
+    }
+    return { success: false, message: 'Incorrect administrator password.' };
+  } catch (err: any) {
+    console.warn('[Supabase] verifyAdminPassword exception:', err);
+    return { success: password === 'admin2026', message: password === 'admin2026' ? undefined : 'Authentication error.' };
+  }
+}
+
+/**
+ * Updates the central administrator password in Supabase.
+ */
+export async function updateAdminPasswordInSupabase(newPassword: string): Promise<boolean> {
+  if (!isSupabaseConfigured || !supabase) return false;
+  try {
+    const { error } = await supabase.from('registrations').upsert({
+      id: 'config_admin_credentials',
+      node_id: 'node-alpha-001',
+      status: 'SUBMITTED',
+      data: {
+        type: 'SYSTEM_ADMIN_CONFIG',
+        password_hash: newPassword,
+        updated_at: new Date().toISOString(),
+      },
+      updated_at: new Date().toISOString(),
+    });
+    return !error;
+  } catch (e) {
+    console.warn('[Supabase] updateAdminPassword error:', e);
+    return false;
+  }
+}
+
+/**
+ * Upserts live machine presence and telemetry to Supabase.
+ */
+export async function upsertMachineTelemetryInSupabase(telemetry: MachineTelemetry): Promise<boolean> {
+  if (!isSupabaseConfigured || !supabase) return false;
+  try {
+    const { error } = await supabase.from('registrations').upsert({
+      id: `mach_telemetry_${telemetry.machine_id}`,
+      node_id: telemetry.node_id || 'node-alpha-001',
+      status: 'SUBMITTED',
+      data: {
+        type: 'MACHINE_TELEMETRY',
+        ...telemetry,
+      },
+      updated_at: new Date().toISOString(),
+    });
+    return !error;
+  } catch (e) {
+    console.warn('[Supabase] Upsert machine telemetry error:', e);
+    return false;
+  }
+}
+
+/**
+ * Fetches collective fleet telemetry for all active/registered field machines.
+ */
+export async function fetchFleetTelemetryFromSupabase(): Promise<MachineTelemetry[]> {
+  if (!isSupabaseConfigured || !supabase) return [];
+  try {
+    const { data, error } = await supabase
+      .from('registrations')
+      .select('*')
+      .like('id', 'mach_telemetry_%');
+
+    if (error || !data) return [];
+
+    return data
+      .filter((r: any) => r.data?.type === 'MACHINE_TELEMETRY')
+      .map((r: any) => r.data as MachineTelemetry);
+  } catch (e) {
+    console.warn('[Supabase] Fetch fleet telemetry error:', e);
+    return [];
+  }
+}
+
+/**
+ * Records a machine operational event log in Supabase.
+ */
+export async function recordMachineEventLogInSupabase(log: Omit<MachineEventLog, 'id'>): Promise<boolean> {
+  if (!isSupabaseConfigured || !supabase) return false;
+  try {
+    const id = `mach_log_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const { error } = await supabase.from('registrations').insert({
+      id,
+      node_id: 'node-alpha-001',
+      status: 'SUBMITTED',
+      data: {
+        type: 'MACHINE_EVENT_LOG',
+        id,
+        ...log,
+      },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    return !error;
+  } catch (e) {
+    console.warn('[Supabase] Record machine log error:', e);
+    return false;
+  }
+}
+
+/**
+ * Fetches collective machine event logs across all devices.
+ */
+export async function fetchMachineEventLogsFromSupabase(): Promise<MachineEventLog[]> {
+  if (!isSupabaseConfigured || !supabase) return [];
+  try {
+    const { data, error } = await supabase
+      .from('registrations')
+      .select('*')
+      .like('id', 'mach_log_%')
+      .order('created_at', { ascending: false })
+      .limit(60);
+
+    if (error || !data) return [];
+
+    return data
+      .filter((r: any) => r.data?.type === 'MACHINE_EVENT_LOG')
+      .map((r: any) => ({
+        id: r.data?.id || r.id,
+        machine_id: r.data?.machine_id || 'UNKNOWN',
+        session_id: r.data?.session_id || 'N/A',
+        machine_name: r.data?.machine_name || 'Field Machine',
+        event_type: r.data?.event_type || 'INFO',
+        title: r.data?.title || 'Operational Event',
+        message: r.data?.message || '',
+        timestamp: r.data?.timestamp || r.created_at || new Date().toISOString(),
+        details: r.data?.details,
+      } as MachineEventLog));
+  } catch (e) {
+    console.warn('[Supabase] Fetch machine logs error:', e);
+    return [];
+  }
+}
+
