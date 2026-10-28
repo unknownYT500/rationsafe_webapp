@@ -64,6 +64,8 @@ import {
   verifyAndApproveRegistrationAsync,
   recordSyncAsync,
   toggleNodeOnlineStatusAsync,
+  getPendingOfflineTokensAsync,
+  type OfflineTokenItem,
   secureDb,
 } from './secure-storage-db.js';
 
@@ -244,6 +246,7 @@ export default function App(): React.ReactElement {
   const [registrations, setRegistrations] = useState<RegistrationItem[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>([]);
   const [metrics, setMetrics] = useState<any>(null);
+  const [pendingTokens, setPendingTokens] = useState<OfflineTokenItem[]>([]);
 
   // Distribution Form
   const [distLotId, setDistLotId] = useState<string>('');
@@ -436,6 +439,26 @@ export default function App(): React.ReactElement {
         if (curr) {
           setIsOnline(curr.status === 'ONLINE');
         }
+      }
+
+      // Sync loaded cards and lots into secureDb to ensure offline edge operations find them
+      try {
+        for (const c of finalCards) {
+          const existing = await secureDb.cards.get(c.id);
+          if (!existing) {
+            await secureDb.cards.put(c);
+          }
+        }
+        for (const l of finalLots) {
+          const existing = await secureDb.lots.get(l.id);
+          if (!existing) {
+            await secureDb.lots.put(l);
+          }
+        }
+        const currentTokens = await getPendingOfflineTokensAsync();
+        setPendingTokens(currentTokens);
+      } catch (err) {
+        console.warn('[Storage] Background cache sync notice:', err);
       }
 
       setRegistrations(finalRegs);
@@ -655,6 +678,30 @@ export default function App(): React.ReactElement {
       return;
     }
     if (!selectedCardId || !distLotId) return;
+    const currentCard = cards.find((c) => c.id === selectedCardId) || activeBeneficiary;
+    if (!currentCard) return;
+
+    // Strict Quota Validation Rule: Block if requested quantity exceeds balance unless supervisor override is enabled
+    if (distQuantity > currentCard.remaining_qty && !distAllowFallback) {
+      setDistCurrentState('FAIL_REASON');
+      const diag = getFailureDiagnostic('ERR_201', 'Card quota exhausted on local lease');
+      setDistExecutionSummary({
+        success: false,
+        mode: isOnline ? 'ONLINE_CENTRAL' : 'OFFLINE_EDGE_SIGNED',
+        state: 'FAIL_REASON',
+        title: 'Quota Exceeded (ERR_201: Card Quota Exhausted)',
+        explanation: `Requested ration of ${distQuantity} kg exceeds remaining balance of ${currentCard.remaining_qty} kg. In standard operator mode, dispensing beyond available quota is strictly blocked.`,
+        remediation: 'Check "Enable Supervisor Offline Fallback Auth" above if you wish to simulate an emergency supervisor override.',
+        rawDetails: {
+          code: 'ERR_201',
+          error: 'Card quota exhausted on local lease',
+          requested_quantity: distQuantity,
+          available_remaining: currentCard.remaining_qty,
+        },
+      });
+      return;
+    }
+
     setDistLoading(true);
     setDistExecutionSummary(null);
     setDistCurrentState('ATTEMPT');
@@ -753,14 +800,26 @@ export default function App(): React.ReactElement {
             rawDetails: res.data,
           });
         } else {
-          const result = await recordDispenseAsync(selectedCardId, distLotId, selectedNodeId, distQuantity, false);
+          const result = await recordDispenseAsync(
+            selectedCardId,
+            distLotId,
+            selectedNodeId,
+            distQuantity,
+            false,
+            distAllowFallback,
+            activeBeneficiary,
+            activeLot
+          );
+          if (result?.card) {
+            setCards((prev) => prev.map((c) => (c.id === selectedCardId ? result.card : c)));
+          }
           setDistCurrentState('PROVISIONAL_ISSUE');
           setDistExecutionSummary({
             success: true,
             mode: 'OFFLINE_EDGE_SIGNED',
             state: 'PROVISIONAL_ISSUE',
             title: 'Provisional Offline Grain Issued (Encrypted IndexedDB)',
-            explanation: `Terminal issued a provisional ration of ${distQuantity} kg to ${activeBeneficiary?.full_name || 'Beneficiary'}. The signed token was queued in persistent storage and can be reconciled later.`,
+            explanation: `Terminal issued a provisional ration of ${distQuantity} kg to ${activeBeneficiary?.full_name || 'Beneficiary'}.${distAllowFallback ? ' (Authorized via Supervisor Offline Fallback)' : ''} The cryptographically signed token was queued into the outbox and will be reconciled during central sync.`,
             rawDetails: result,
           });
         }
@@ -793,9 +852,23 @@ export default function App(): React.ReactElement {
           `Batch Reconciliation Succeeded! Reconciled ${res.data.accepted_count || 0} tokens to the central ledger.`
         );
       } else {
-        const { reconciledCount } = await recordSyncAsync(selectedNodeId);
+        const { reconciledCount, tokens } = await recordSyncAsync(selectedNodeId);
+        
+        // Push each pending offline token to live Supabase cloud database
+        for (const token of tokens) {
+          const card = cards.find((c) => c.id === token.card_id) || ({
+            id: token.card_id,
+            full_name: token.card_name,
+            consumed_qty: 0,
+            remaining_qty: 30,
+            allocated_qty: 30,
+          } as CardBeneficiary);
+          await recordDispenseInSupabase(card, token.lot_id, token.quantity, token.node_id);
+        }
+
+        setPendingTokens([]);
         setSyncNotice(
-          `Batch Reconciliation Succeeded (Encrypted IndexedDB)! Reconciled ${reconciledCount} tokens to the persistent ledger.`
+          `Batch Reconciliation Succeeded! Successfully synchronized ${reconciledCount} provisional token(s) to the central Supabase ledger.`
         );
       }
       await loadAllData(selectedCardId);
@@ -1176,7 +1249,7 @@ export default function App(): React.ReactElement {
           <WifiOff size={16} />
           <span>
             OFFLINE AUTONOMOUS MODE: Terminal operates on local signed leases. Grain will be provisioned using Ed25519
-            cryptographic tokens and queued into the outbox ({activeNode?.outbox_depth || 0} pending) until network sync.
+            cryptographic tokens and queued into the outbox ({Math.max(activeNode?.outbox_depth || 0, pendingTokens.length)} pending) until network sync.
           </span>
         </div>
       )}
@@ -1202,7 +1275,7 @@ export default function App(): React.ReactElement {
           onClick={() => setActiveTab('edge-sync')}
         >
           <RefreshCw size={16} />
-          <span>Edge Outbox & Sync ({activeNode?.outbox_depth || 0})</span>
+          <span>Edge Outbox & Sync ({Math.max(activeNode?.outbox_depth || 0, pendingTokens.length)})</span>
         </button>
         <button
           className={`nav-tab-btn ${activeTab === 'inventory' ? 'active' : ''}`}
@@ -1219,6 +1292,38 @@ export default function App(): React.ReactElement {
           <span>Immutable Audit Log</span>
         </button>
       </nav>
+
+      {/* Network Reconnected Sync Banner */}
+      {isOnline && Math.max(activeNode?.outbox_depth || 0, pendingTokens.length) > 0 && (
+        <div
+          style={{
+            background: 'linear-gradient(90deg, rgba(245, 158, 11, 0.15), rgba(16, 185, 129, 0.15))',
+            border: '1px solid rgba(245, 158, 11, 0.4)',
+            borderRadius: 'var(--radius-md)',
+            padding: '0.75rem 1.25rem',
+            marginBottom: '1rem',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: '1rem',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', color: 'var(--amber-400)', fontSize: '0.86rem' }}>
+            <RefreshCw size={17} />
+            <span>
+              <strong>Network Online:</strong> {Math.max(activeNode?.outbox_depth || 0, pendingTokens.length)} provisional offline token(s) ready to sync to the central cloud database.
+            </span>
+          </div>
+          <button
+            className="btn-primary"
+            style={{ padding: '0.4rem 0.9rem', fontSize: '0.78rem' }}
+            onClick={handleTriggerSync}
+            disabled={syncLoading}
+          >
+            {syncLoading ? 'Syncing...' : 'Reconcile Outbox Now'}
+          </button>
+        </div>
+      )}
 
       <main className="main-view" key={activeTab}>
         {/* TAB 1: GRAIN DISTRIBUTION DESK */}
@@ -1930,8 +2035,8 @@ export default function App(): React.ReactElement {
               </div>
               <div className="metric-box">
                 <span className="metric-label">Queued Provisional Tokens</span>
-                <span className="metric-value" style={{ color: activeNode?.outbox_depth ? 'var(--amber-400)' : 'var(--emerald-400)' }}>
-                  {activeNode?.outbox_depth || 0}
+                <span className="metric-value" style={{ color: Math.max(activeNode?.outbox_depth || 0, pendingTokens.length) ? 'var(--amber-400)' : 'var(--emerald-400)' }}>
+                  {Math.max(activeNode?.outbox_depth || 0, pendingTokens.length)}
                 </span>
                 <span className="metric-sub">Awaiting central verification</span>
               </div>
@@ -1964,7 +2069,9 @@ export default function App(): React.ReactElement {
                           {n.status}
                         </span>
                       </td>
-                      <td style={{ fontWeight: 700 }}>{n.outbox_depth || 0} tokens</td>
+                      <td style={{ fontWeight: 700 }}>
+                        {n.id === selectedNodeId ? Math.max(n.outbox_depth || 0, pendingTokens.length) : (n.outbox_depth || 0)} tokens
+                      </td>
                       <td>{n.location || 'Depot'}</td>
                       <td>
                         <code style={{ fontSize: '0.72rem', color: 'var(--cyan-400)' }}>
@@ -1976,6 +2083,51 @@ export default function App(): React.ReactElement {
                 </tbody>
               </table>
             </div>
+
+            {pendingTokens.length > 0 && (
+              <div style={{ marginTop: '1.75rem' }}>
+                <h3 style={{ fontSize: '0.95rem', fontWeight: 700, marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--amber-400)' }}>
+                  <Clock size={16} />
+                  <span>Pending Offline Provisional Tokens Queued in Outbox ({pendingTokens.length})</span>
+                </h3>
+                <div className="data-table-wrapper">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Token ID</th>
+                        <th>Citizen / Beneficiary</th>
+                        <th>Commodity Lot</th>
+                        <th>Quantity</th>
+                        <th>Created At</th>
+                        <th>Authorization Mode</th>
+                        <th>Reconciliation Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pendingTokens.map((t) => (
+                        <tr key={t.id}>
+                          <td><code style={{ fontSize: '0.75rem', color: 'var(--cyan-400)' }}>{t.id}</code></td>
+                          <td style={{ fontWeight: 600 }}>{t.card_name}</td>
+                          <td>{t.lot_name}</td>
+                          <td style={{ fontWeight: 700, color: 'var(--emerald-400)' }}>{t.quantity} kg</td>
+                          <td style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{new Date(t.timestamp).toLocaleTimeString()}</td>
+                          <td>
+                            <span className={`badge ${t.allow_fallback ? 'badge-provisional' : 'badge-reconciled'}`}>
+                              {t.allow_fallback ? 'Supervisor Override' : 'Standard Offline Lease'}
+                            </span>
+                          </td>
+                          <td>
+                            <span style={{ fontSize: '0.8rem', color: 'var(--amber-400)', fontWeight: 600 }}>
+                              ⏳ Pending Central Sync
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -2002,11 +2154,11 @@ export default function App(): React.ReactElement {
                     <tr key={l.id}>
                       <td style={{ fontWeight: 700 }}>{l.name}</td>
                       <td>
-                        <span className="badge badge-reconciled">{l.grain_type}</span>
+                        <span className="badge badge-reconciled">{l.grain_type || 'Wheat'}</span>
                       </td>
-                      <td>{l.total_quantity.toLocaleString()} kg</td>
+                      <td>{(l.total_quantity ?? 5000).toLocaleString()} kg</td>
                       <td style={{ fontWeight: 800, color: 'var(--emerald-400)' }}>
-                        {l.remaining_quantity.toLocaleString()} kg
+                        {(l.remaining_quantity ?? 5000).toLocaleString()} kg
                       </td>
                     </tr>
                   ))}

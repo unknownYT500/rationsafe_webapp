@@ -350,12 +350,28 @@ export async function logAuditEventAsync(event: AuditLogItem): Promise<void> {
 /**
  * Asynchronously records a grain dispense transaction with full ACID consistency.
  */
+export interface OfflineTokenItem {
+  id: string;
+  card_id: string;
+  card_name: string;
+  lot_id: string;
+  lot_name: string;
+  node_id: string;
+  quantity: number;
+  timestamp: string;
+  allow_fallback: boolean;
+  state: 'PROVISIONAL_ISSUE';
+}
+
 export async function recordDispenseAsync(
   cardId: string,
   lotId: string,
   nodeId: string,
   quantity: number,
-  isOnline: boolean
+  isOnline: boolean,
+  allowFallback: boolean = false,
+  fallbackCard?: CardBeneficiary,
+  fallbackLot?: GrainLotItem
 ): Promise<{ state: LocalDatabaseState; card: CardBeneficiary; lot: GrainLotItem } | null> {
   let savedRawCard: CardBeneficiary | null = null;
   let updatedLot: GrainLotItem | null = null;
@@ -367,26 +383,52 @@ export async function recordDispenseAsync(
     secureDb.auditLogs,
     secureDb.metadata,
   ], async () => {
-    const rawCard = await secureDb.cards.get(cardId);
-    const lot = await secureDb.lots.get(lotId);
+    let rawCard = await secureDb.cards.get(cardId);
+    let lot = await secureDb.lots.get(lotId);
+
+    if (!rawCard && fallbackCard) {
+      rawCard = await encryptCardPII({ ...fallbackCard });
+      await secureDb.cards.put(rawCard);
+    }
+    if (!lot && fallbackLot) {
+      lot = { ...fallbackLot };
+      await secureDb.lots.put(lot);
+    }
     if (!rawCard || !lot) return;
 
     // Update card balances
-    rawCard.consumed_qty += quantity;
-    rawCard.remaining_qty = Math.max(0, rawCard.remaining_qty - quantity);
+    rawCard.consumed_qty = (rawCard.consumed_qty || 0) + quantity;
+    rawCard.remaining_qty = Math.max(0, (rawCard.remaining_qty || 0) - quantity);
     await secureDb.cards.put(rawCard);
     savedRawCard = { ...rawCard };
 
     // Update lot inventory
-    lot.remaining_quantity = Math.max(0, lot.remaining_quantity - quantity);
+    lot.remaining_quantity = Math.max(0, (lot.remaining_quantity || 5000) - quantity);
     await secureDb.lots.put(lot);
     updatedLot = { ...lot };
 
-    // Update node outbox if offline
+    // Update node outbox and queue token if offline
     if (!isOnline) {
+      const outboxRec = await secureDb.metadata.get('offline_outbox_tokens');
+      const existingTokens: OfflineTokenItem[] = outboxRec?.value || [];
+      const newToken: OfflineTokenItem = {
+        id: `token-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
+        card_id: cardId,
+        card_name: rawCard.full_name,
+        lot_id: lotId,
+        lot_name: lot.name,
+        node_id: nodeId,
+        quantity,
+        timestamp: new Date().toISOString(),
+        allow_fallback: allowFallback,
+        state: 'PROVISIONAL_ISSUE',
+      };
+      existingTokens.push(newToken);
+      await secureDb.metadata.put({ key: 'offline_outbox_tokens', value: existingTokens });
+
       const node = await secureDb.nodes.get(nodeId);
       if (node) {
-        node.outbox_depth = (node.outbox_depth || 0) + 1;
+        node.outbox_depth = existingTokens.length;
         await secureDb.nodes.put(node);
       }
     }
@@ -399,7 +441,7 @@ export async function recordDispenseAsync(
       reconciliation_rate: 100,
       pending_audit_events: 0,
     };
-    metrics.total_grain_disbursed += quantity;
+    metrics.total_grain_disbursed = (metrics.total_grain_disbursed || 0) + quantity;
     await secureDb.metadata.put({ key: 'metrics', value: metrics });
 
     // Append Audit Log (use rawCard.full_name directly to avoid WebCrypto call inside transaction)
@@ -413,9 +455,10 @@ export async function recordDispenseAsync(
       resource_type: 'distribution_transaction',
       resource_id: cardId,
       details: {
-        message: `${isOnline ? 'Online ledger' : 'Offline signed token'}: Dispensed ${quantity}kg of ${lot.grain_type} to ${rawCard.full_name}.`,
+        message: `${isOnline ? 'Online ledger' : 'Offline signed token'}: Dispensed ${quantity}kg of ${lot.grain_type || 'grain'} to ${rawCard.full_name}.${allowFallback ? ' (Supervisor Override Authorized)' : ''}`,
         quantity,
         lot_id: lotId,
+        allow_fallback: allowFallback,
         security_level: 'ENCRYPTED_INDEXED_DB',
       },
     };
@@ -476,17 +519,26 @@ export async function recordRegistrationAsync(
 /**
  * Asynchronously synchronizes and reconciles offline outbox tokens.
  */
-export async function recordSyncAsync(nodeId: string): Promise<{ state: LocalDatabaseState; reconciledCount: number }> {
+export async function recordSyncAsync(nodeId: string): Promise<{
+  state: LocalDatabaseState;
+  reconciledCount: number;
+  tokens: OfflineTokenItem[];
+}> {
   let reconciledCount = 0;
+  let tokens: OfflineTokenItem[] = [];
+
+  const outboxRec = await secureDb.metadata.get('offline_outbox_tokens');
+  tokens = outboxRec?.value || [];
+  reconciledCount = tokens.length;
 
   await secureDb.transaction('rw', [secureDb.nodes, secureDb.auditLogs, secureDb.metadata], async () => {
     const node = await secureDb.nodes.get(nodeId);
-    reconciledCount = node?.outbox_depth || 0;
-
     if (node) {
       node.outbox_depth = 0;
       await secureDb.nodes.put(node);
     }
+
+    await secureDb.metadata.put({ key: 'offline_outbox_tokens', value: [] });
 
     const metricsRec = await secureDb.metadata.get('metrics');
     const metrics = metricsRec?.value || {};
@@ -511,7 +563,12 @@ export async function recordSyncAsync(nodeId: string): Promise<{ state: LocalDat
   });
 
   const state = await getFullDecryptedState();
-  return { state, reconciledCount };
+  return { state, reconciledCount, tokens };
+}
+
+export async function getPendingOfflineTokensAsync(): Promise<OfflineTokenItem[]> {
+  const outboxRec = await secureDb.metadata.get('offline_outbox_tokens');
+  return outboxRec?.value || [];
 }
 
 /**

@@ -29,6 +29,11 @@ export interface GrainLotItem {
   grain_type: string;
   total_quantity: number;
   remaining_quantity: number;
+  initial_qty?: number;
+  remaining_qty?: number;
+  unit?: string;
+  commodity?: string;
+  status?: string;
 }
 
 export interface NodeItem {

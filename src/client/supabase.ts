@@ -126,15 +126,23 @@ export async function fetchCloudDataFromSupabase(): Promise<{
       };
     });
 
-    const mappedLots: GrainLotItem[] = (lotsRes.data || []).map((l: any) => ({
-      id: l.id,
-      name: l.name || l.grain_type || 'Stockpile',
-      commodity: l.grain_type?.toLowerCase().includes('rice') ? 'Rice' : 'Wheat',
-      initial_qty: Number(l.total_quantity || 5000),
-      remaining_qty: Number(l.remaining_quantity || 5000),
-      unit: 'kg',
-      status: Number(l.remaining_quantity) > 0 ? 'AVAILABLE' : 'DEPLETED',
-    }));
+    const mappedLots: GrainLotItem[] = (lotsRes.data || []).map((l: any) => {
+      const grainType = l.grain_type || (l.name?.toLowerCase().includes('rice') ? 'Rice' : 'Wheat');
+      const total = Number(l.total_quantity ?? 5000);
+      const remaining = Number(l.remaining_quantity ?? total);
+      return {
+        id: l.id,
+        name: l.name || `${grainType} Reserve Lot`,
+        grain_type: grainType,
+        total_quantity: total,
+        remaining_quantity: remaining,
+        initial_qty: total,
+        remaining_qty: remaining,
+        unit: 'kg',
+        commodity: grainType,
+        status: remaining > 0 ? 'AVAILABLE' : 'DEPLETED',
+      };
+    });
 
     const mappedNodes: NodeItem[] = (nodesRes.data || []).map((n: any) => {
       const isOnlineStatus = n.status === 'OFFLINE' ? false : (n.status === 'ONLINE' || n.status === 'ACTIVE' || n.is_online === true);
