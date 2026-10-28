@@ -46,6 +46,7 @@ import {
   approveRegistrationInSupabase,
   recordDispenseInSupabase,
   verifyAdminPasswordInSupabase,
+  verifyRolePasswordInSupabase,
   updateAdminPasswordInSupabase,
   upsertMachineTelemetryInSupabase,
   fetchFleetTelemetryFromSupabase,
@@ -231,11 +232,36 @@ function getRoleShortName(role: UserRole): string {
   }
 }
 
+function getRoleLongName(role: UserRole): string {
+  switch (role) {
+    case 'DISTRIBUTION_OPERATOR':
+      return 'Distribution Operator';
+    case 'REGISTRATION_OPERATOR':
+      return 'Registration Operator';
+    case 'SUPERVISOR':
+      return 'Field Supervisor';
+    case 'AUDITOR':
+      return 'Auditor';
+    case 'ADMINISTRATOR':
+      return 'Administrator';
+    default:
+      return role;
+  }
+}
+
 export default function App(): React.ReactElement {
   const [activeTab, setActiveTab] = useState<
     'distribution' | 'registrations' | 'edge-sync' | 'inventory' | 'audit-trail' | 'fleet-telemetry'
   >('distribution');
-  const [activeRole, setActiveRole] = useState<UserRole>('DISTRIBUTION_OPERATOR');
+  const [activeRole, setActiveRole] = useState<UserRole>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('graintrust_active_role') as UserRole;
+      if (saved && ['DISTRIBUTION_OPERATOR', 'REGISTRATION_OPERATOR', 'SUPERVISOR', 'AUDITOR', 'ADMINISTRATOR'].includes(saved)) {
+        return saved;
+      }
+    }
+    return 'DISTRIBUTION_OPERATOR';
+  });
   const [isOnline, setIsOnline] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('graintrust_terminal_online_node-alpha-001');
@@ -272,11 +298,12 @@ export default function App(): React.ReactElement {
     return 'SESS-DEMO-01';
   });
 
-  // Admin Central Password Authentication Modal State
-  const [adminAuthModalOpen, setAdminAuthModalOpen] = useState<boolean>(false);
-  const [adminPasswordInput, setAdminPasswordInput] = useState<string>('');
-  const [adminAuthLoading, setAdminAuthLoading] = useState<boolean>(false);
-  const [adminAuthError, setAdminAuthError] = useState<string | null>(null);
+  // Role Security Password Authentication Modal State (Password required for all roles)
+  const [roleAuthModalOpen, setRoleAuthModalOpen] = useState<boolean>(false);
+  const [pendingTargetRole, setPendingTargetRole] = useState<UserRole>('DISTRIBUTION_OPERATOR');
+  const [rolePasswordInput, setRolePasswordInput] = useState<string>('');
+  const [roleAuthLoading, setRoleAuthLoading] = useState<boolean>(false);
+  const [roleAuthError, setRoleAuthError] = useState<string | null>(null);
   const [adminOfflineBlockedModal, setAdminOfflineBlockedModal] = useState<boolean>(false);
 
   // Machine Switcher Modal State
@@ -296,6 +323,9 @@ export default function App(): React.ReactElement {
 
   useEffect(() => {
     currentActiveRole = activeRole;
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('graintrust_active_role', activeRole);
+    }
   }, [activeRole]);
 
   // Core Data
@@ -666,53 +696,66 @@ export default function App(): React.ReactElement {
     }
   }, [activeTab, activeRole]);
 
-  // Role switcher handler with password modal gate for Administrator
-  const handleRoleChangeRequest = (newRole: UserRole) => {
-    if (newRole === 'ADMINISTRATOR') {
-      if (!isOnline) {
-        setAdminOfflineBlockedModal(true);
-        return;
-      }
-      setAdminPasswordInput('');
-      setAdminAuthError(null);
-      setAdminAuthModalOpen(true);
-      return;
-    }
-    setActiveRole(newRole);
+  // Operator Role Switcher and Password Verification Handler (Every role requires password)
+  const openRoleAuthModal = (targetRole?: UserRole) => {
+    const nextRole = targetRole || activeRole;
+    setPendingTargetRole(nextRole);
+    setRolePasswordInput('');
+    setRoleAuthError(null);
+    setRoleAuthModalOpen(true);
   };
 
-  const handleVerifyAdminPassword = async (e?: React.FormEvent) => {
+  const handleRoleChangeRequest = (newRole: UserRole) => {
+    openRoleAuthModal(newRole);
+  };
+
+  const handleVerifyRolePassword = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!adminPasswordInput) {
-      setAdminAuthError('Please enter the administrator password.');
+    if (!rolePasswordInput) {
+      setRoleAuthError('Please enter the security password.');
       return;
     }
-    setAdminAuthLoading(true);
-    setAdminAuthError(null);
+
+    // In offline autonomous mode, Administrator role cannot be accessed
+    if (pendingTargetRole === 'ADMINISTRATOR' && !isOnline) {
+      setRoleAuthModalOpen(false);
+      setAdminOfflineBlockedModal(true);
+      return;
+    }
+
+    setRoleAuthLoading(true);
+    setRoleAuthError(null);
 
     try {
-      const result = await verifyAdminPasswordInSupabase(adminPasswordInput);
+      const result = await verifyRolePasswordInSupabase(rolePasswordInput, pendingTargetRole);
       if (result.success) {
-        setActiveRole('ADMINISTRATOR');
-        setAdminAuthModalOpen(false);
-        setAdminPasswordInput('');
+        setActiveRole(pendingTargetRole);
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('graintrust_active_role', pendingTargetRole);
+        }
+        setRoleAuthModalOpen(false);
+        setRolePasswordInput('');
+
         await recordMachineEventLogInSupabase({
           machine_id: currentMachineId,
           session_id: sessionId,
           machine_name: currentMachineName,
-          event_type: 'SUPERVISOR_OVERRIDE',
-          title: 'Administrator Access Granted',
-          message: `${currentMachineName} (${currentMachineId}) successfully unlocked Administrator Governance Hub with central Supabase credentials.`,
+          event_type: 'ROLE_LOGIN',
+          title: `${getRoleLongName(pendingTargetRole)} Authenticated`,
+          message: `${currentMachineName} (${currentMachineId}) successfully unlocked ${getRoleLongName(pendingTargetRole)} session.`,
           timestamp: new Date().toISOString(),
         });
-        setActiveTab('fleet-telemetry');
+
+        if (pendingTargetRole === 'ADMINISTRATOR') {
+          setActiveTab('fleet-telemetry');
+        }
       } else {
-        setAdminAuthError(result.message || 'Incorrect administrator password. Access denied.');
+        setRoleAuthError(result.message || 'Incorrect security password. Access denied.');
       }
     } catch {
-      setAdminAuthError('Authentication request failed. Please check network connection.');
+      setRoleAuthError('Authentication request failed. Please check network connection.');
     } finally {
-      setAdminAuthLoading(false);
+      setRoleAuthLoading(false);
     }
   };
 
@@ -1309,42 +1352,57 @@ export default function App(): React.ReactElement {
             </span>
           </div>
 
-          {/* Machine Profile Identity Chip (4-Laptop Demo) */}
-          <button
-            type="button"
-            className="role-selector"
+          {/* Hardware Machine Identity Badge */}
+          <div
             style={{
               display: 'inline-flex',
               alignItems: 'center',
               gap: '0.45rem',
               padding: '0.35rem 0.65rem',
               borderRadius: 'var(--radius-md)',
-              border: '1px solid rgba(56, 189, 248, 0.4)',
+              border: '1px solid rgba(16, 185, 129, 0.35)',
               background: 'rgba(15, 23, 42, 0.85)',
-              cursor: 'pointer',
-              color: 'var(--cyan-400)',
+              color: 'var(--emerald-400)',
             }}
-            onClick={() => setMachineModalOpen(true)}
-            title="Click to switch machine identity for multi-device demonstration (Laptop 1, 2, 3, 4)"
+            title={`Physical Hardware Machine: ${currentMachineId} | Deployed at ${currentMachineName}`}
           >
-            <Monitor size={14} />
-            <span style={{ fontSize: '0.74rem', fontWeight: 700 }}>{currentMachineId}:</span>
-            <span style={{ fontSize: '0.74rem', color: '#ffffff' }}>
+            <Monitor size={14} color="var(--emerald-400)" />
+            <span style={{ fontSize: '0.74rem', fontWeight: 800, color: '#ffffff', letterSpacing: '0.03em' }}>
+              {currentMachineId}:
+            </span>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
               {currentMachineName.split('(')[0].trim()}
             </span>
             <span
               style={{
                 fontSize: '0.62rem',
                 fontFamily: 'var(--font-mono)',
-                background: 'rgba(56, 189, 248, 0.2)',
-                color: 'var(--cyan-400)',
+                background: 'rgba(16, 185, 129, 0.15)',
+                color: 'var(--emerald-400)',
                 padding: '1px 5px',
                 borderRadius: '4px',
               }}
             >
               {sessionId}
             </span>
-          </button>
+            <button
+              type="button"
+              onClick={() => setMachineModalOpen(true)}
+              style={{
+                background: 'rgba(255, 255, 255, 0.08)',
+                border: '1px solid rgba(255, 255, 255, 0.15)',
+                borderRadius: '4px',
+                color: 'var(--text-muted)',
+                fontSize: '0.65rem',
+                padding: '1px 5px',
+                cursor: 'pointer',
+                marginLeft: '2px',
+              }}
+              title="Configure device hardware ID"
+            >
+              Device ID
+            </button>
+          </div>
 
           {/* Active Terminal Node */}
           <div className="role-selector">
@@ -1372,25 +1430,57 @@ export default function App(): React.ReactElement {
             <span>{isOnline ? 'Network: Online' : 'Network: Offline (Edge)'}</span>
           </button>
 
-          {/* Role Switcher */}
-          <div className="role-selector" style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Role:</span>
-              <select value={activeRole} onChange={(e) => handleRoleChangeRequest(e.target.value as UserRole)}>
-                <option value="DISTRIBUTION_OPERATOR">Distribution Operator</option>
-                <option value="REGISTRATION_OPERATOR">Registration Operator</option>
-                <option value="SUPERVISOR">Field Supervisor</option>
-                <option value="AUDITOR">Auditor</option>
-                <option value="ADMINISTRATOR">Administrator 🔒 (Cloud Required)</option>
-              </select>
+          {/* Authenticated Operator Persona Badge (No casual demo dropdown) */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.55rem',
+              background: 'rgba(15, 23, 42, 0.85)',
+              border: '1px solid rgba(255, 255, 255, 0.12)',
+              borderRadius: 'var(--radius-md)',
+              padding: '0.35rem 0.7rem',
+            }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                <UserCheck size={14} color={activeRole === 'ADMINISTRATOR' ? 'var(--rose-400)' : 'var(--emerald-400)'} />
+                <span style={{ fontSize: '0.76rem', fontWeight: 700, color: '#ffffff' }}>
+                  {getRoleLongName(activeRole)}
+                </span>
+                {activeRole === 'ADMINISTRATOR' && (
+                  <span style={{ fontSize: '0.62rem', background: 'rgba(244, 63, 94, 0.2)', color: 'var(--rose-400)', padding: '1px 5px', borderRadius: '4px', fontWeight: 700 }}>
+                    ROOT
+                  </span>
+                )}
+              </div>
+              <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+                Authenticated Operator
+              </span>
             </div>
-            <span style={{ fontSize: '0.66rem', color: activeRole === 'AUDITOR' ? 'var(--cyan-400)' : activeRole === 'ADMINISTRATOR' ? 'var(--rose-400)' : activeRole === 'SUPERVISOR' ? 'var(--emerald-400)' : 'var(--text-muted)' }}>
-              {activeRole === 'DISTRIBUTION_OPERATOR' && '● POS Dispensing & Warehouse Stock'}
-              {activeRole === 'REGISTRATION_OPERATOR' && '● Citizen Intake & KYC Enrollment'}
-              {activeRole === 'SUPERVISOR' && '● Field Approvals, Override & Dispense'}
-              {activeRole === 'AUDITOR' && '● Read-Only Audit & Trace Oversight'}
-              {activeRole === 'ADMINISTRATOR' && '● Full Administration & Key Governance'}
-            </span>
+
+            <button
+              type="button"
+              className="btn-secondary"
+              style={{
+                fontSize: '0.72rem',
+                padding: '0.25rem 0.6rem',
+                borderRadius: '6px',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.3rem',
+                border: '1px solid rgba(16, 185, 129, 0.4)',
+                background: 'rgba(16, 185, 129, 0.12)',
+                color: 'var(--emerald-400)',
+                cursor: 'pointer',
+                fontWeight: 600,
+              }}
+              onClick={() => openRoleAuthModal()}
+              title="Authenticate and switch operator role (Password required for all roles)"
+            >
+              <Lock size={12} />
+              <span>Switch Role</span>
+            </button>
           </div>
 
           {/* Reset Database Button */}
@@ -1469,24 +1559,41 @@ export default function App(): React.ReactElement {
               <span>Operator Persona (RBAC)</span>
             </div>
             <div className="drawer-card">
-              <select
-                className="drawer-select"
-                value={activeRole}
-                onChange={(e) => setActiveRole(e.target.value as UserRole)}
-              >
-                <option value="DISTRIBUTION_OPERATOR">Distribution Operator</option>
-                <option value="REGISTRATION_OPERATOR">Registration Operator</option>
-                <option value="SUPERVISOR">Field Supervisor</option>
-                <option value="AUDITOR">Auditor</option>
-                <option value="ADMINISTRATOR">Administrator</option>
-              </select>
-              <div className="drawer-role-desc">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.6rem' }}>
+                <div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Active Logged-in Operator:</div>
+                  <strong style={{ fontSize: '0.95rem', color: '#ffffff' }}>{getRoleLongName(activeRole)}</strong>
+                </div>
+                <span className="badge badge-reconciled">AUTHENTICATED</span>
+              </div>
+              <div className="drawer-role-desc" style={{ marginBottom: '0.85rem' }}>
                 {activeRole === 'DISTRIBUTION_OPERATOR' && '● POS Dispensing & Warehouse Stock'}
                 {activeRole === 'REGISTRATION_OPERATOR' && '● Citizen Intake & KYC Enrollment'}
                 {activeRole === 'SUPERVISOR' && '● Field Approvals, Override & Dispense'}
                 {activeRole === 'AUDITOR' && '● Read-Only Audit & Trace Oversight'}
                 {activeRole === 'ADMINISTRATOR' && '● Full Administration & Key Governance'}
               </div>
+              <button
+                type="button"
+                className="btn-primary"
+                style={{
+                  width: '100%',
+                  padding: '0.55rem',
+                  fontSize: '0.8rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '0.45rem',
+                  background: 'var(--emerald-500)',
+                }}
+                onClick={() => {
+                  setMobileDrawerOpen(false);
+                  openRoleAuthModal();
+                }}
+              >
+                <Lock size={14} />
+                <span>Switch / Authenticate Role</span>
+              </button>
             </div>
           </div>
 
@@ -1855,23 +1962,20 @@ export default function App(): React.ReactElement {
                     Only cards registered/assigned to this machine are visible ({displayedCards.length} of {cards.length} cards).
                   </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setMachineModalOpen(true)}
+                <span
                   style={{
-                    background: 'rgba(56, 189, 248, 0.15)',
-                    border: '1px solid var(--cyan-500)',
-                    borderRadius: '4px',
-                    color: 'var(--cyan-400)',
                     fontSize: '0.72rem',
                     padding: '3px 9px',
-                    cursor: 'pointer',
-                    fontWeight: 600,
+                    borderRadius: '4px',
+                    background: 'rgba(56, 189, 248, 0.15)',
+                    border: '1px solid var(--cyan-500)',
+                    color: 'var(--cyan-400)',
+                    fontWeight: 700,
+                    letterSpacing: '0.04em',
                   }}
-                  title="Switch machine identity for multi-laptop demo"
                 >
-                  Switch Laptop Profile
-                </button>
+                  ISOLATED HARDWARE LEDGER
+                </span>
               </div>
             )}
 
@@ -2954,20 +3058,29 @@ export default function App(): React.ReactElement {
                               display: 'grid',
                               gridTemplateColumns: 'repeat(2, 1fr)',
                               gap: '0.6rem',
-                              padding: '0.75rem',
+                              padding: '0.85rem',
                               background: '#090d16',
                               borderRadius: 'var(--radius-sm)',
-                              fontSize: '0.76rem',
+                              fontSize: '0.78rem',
                               marginBottom: '0.75rem',
                             }}
                           >
+                            <div style={{ gridColumn: 'span 2', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.45rem 0.65rem', background: 'rgba(255, 255, 255, 0.04)', borderRadius: '6px', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
+                              <span style={{ color: 'var(--text-muted)', fontSize: '0.74rem' }}>Role Logged In:</span>
+                              <span style={{ fontWeight: 700, color: '#ffffff', display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.82rem' }}>
+                                <UserCheck size={14} color="var(--emerald-400)" />
+                                {getRoleLongName(m.role as UserRole)}
+                              </span>
+                            </div>
                             <div>
                               <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '0.68rem' }}>Session ID:</span>
                               <code style={{ color: 'var(--cyan-400)', fontSize: '0.72rem' }}>{m.session_id}</code>
                             </div>
                             <div>
-                              <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '0.68rem' }}>Role Mode:</span>
-                              <span style={{ fontWeight: 600, color: '#ffffff' }}>{getRoleShortName(m.role as UserRole)}</span>
+                              <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '0.68rem' }}>Connectivity:</span>
+                              <span style={{ fontWeight: 700, color: m.is_online ? 'var(--emerald-400)' : 'var(--amber-400)' }}>
+                                {m.is_online ? 'Cloud Synchronized' : 'Offline Autonomous'}
+                              </span>
                             </div>
                             <div>
                               <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '0.68rem' }}>Outbox Depth:</span>
@@ -2985,25 +3098,11 @@ export default function App(): React.ReactElement {
 
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
                             <span>
-                              Last Ping: <strong>{m.last_ping && m.last_ping.includes('T') ? new Date(m.last_ping).toLocaleTimeString() : m.last_ping}</strong>
+                              Last Telemetry Ping: <strong style={{ color: '#ffffff' }}>{m.last_ping && m.last_ping.includes('T') ? new Date(m.last_ping).toLocaleTimeString() : m.last_ping}</strong>
                             </span>
-                            {!isCurrentThisLaptop && (
-                              <button
-                                type="button"
-                                onClick={() => handleSelectMachineProfile(m.machine_id)}
-                                style={{
-                                  background: 'rgba(255, 255, 255, 0.05)',
-                                  border: '1px solid var(--border-subtle)',
-                                  borderRadius: '4px',
-                                  color: 'var(--text-main)',
-                                  fontSize: '0.7rem',
-                                  padding: '2px 8px',
-                                  cursor: 'pointer',
-                                }}
-                              >
-                                Simulate This Machine
-                              </button>
-                            )}
+                            <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                              Hardware ID: {m.machine_id}
+                            </span>
                           </div>
                         </div>
                       );
@@ -3227,14 +3326,14 @@ export default function App(): React.ReactElement {
         )}
       </main>
 
-      {/* MODAL 1: Admin Central Password Authentication Modal */}
-      {adminAuthModalOpen && (
+      {/* MODAL 1: Operator Role Security Password Authentication Modal (White & Green Theme) */}
+      {roleAuthModalOpen && (
         <div
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(5, 8, 16, 0.85)',
-            backdropFilter: 'blur(8px)',
+            background: 'rgba(15, 23, 42, 0.75)',
+            backdropFilter: 'blur(10px)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -3244,127 +3343,239 @@ export default function App(): React.ReactElement {
         >
           <div
             style={{
-              background: '#0e1626',
-              border: '1px solid rgba(244, 63, 94, 0.4)',
-              borderRadius: 'var(--radius-lg)',
-              padding: '1.75rem',
-              maxWidth: '440px',
+              background: '#ffffff',
+              border: '1.5px solid #10b981',
+              borderRadius: '20px',
+              maxWidth: '480px',
               width: '100%',
-              boxShadow: '0 20px 40px rgba(0, 0, 0, 0.7)',
+              boxShadow: '0 25px 60px -15px rgba(5, 150, 105, 0.25), 0 10px 25px -5px rgba(0, 0, 0, 0.1)',
+              overflow: 'hidden',
+              color: '#0f172a',
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+            {/* White & Green Header */}
+            <div
+              style={{
+                background: 'linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%)',
+                borderBottom: '1px solid #d1fae5',
+                padding: '1.4rem 1.75rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.85rem',
+              }}
+            >
               <div
                 style={{
-                  width: '44px',
-                  height: '44px',
-                  borderRadius: '50%',
-                  background: 'rgba(244, 63, 94, 0.15)',
+                  width: '46px',
+                  height: '46px',
+                  borderRadius: '12px',
+                  background: '#ffffff',
+                  border: '1.5px solid #10b981',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
+                  boxShadow: '0 4px 10px rgba(16, 185, 129, 0.15)',
+                  flexShrink: 0,
                 }}
               >
-                <ShieldCheck size={24} color="var(--rose-400)" />
+                <ShieldCheck size={24} color="#059669" />
               </div>
-              <div>
-                <h3 style={{ fontSize: '1.15rem', fontWeight: 800, color: '#ffffff', margin: 0 }}>
-                  Administrator Access
+              <div style={{ flex: 1 }}>
+                <h3 style={{ fontSize: '1.18rem', fontWeight: 800, color: '#065f46', margin: 0 }}>
+                  Operator Role Authentication
                 </h3>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                  Centralized Supabase Cloud Authentication
+                <span style={{ fontSize: '0.76rem', color: '#059669', fontWeight: 600 }}>
+                  Device: {currentMachineId} · {currentMachineName.split('(')[0].trim()}
                 </span>
               </div>
-            </div>
-
-            <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: '1.25rem' }}>
-              Please enter the central master administrator password. Credentials are encrypted and verified against Supabase cloud storage to prevent edge terminal privilege escalation.
-            </p>
-
-            {adminAuthError && (
-              <div
+              <button
+                type="button"
+                onClick={() => {
+                  setRoleAuthModalOpen(false);
+                  setRolePasswordInput('');
+                  setRoleAuthError(null);
+                }}
                 style={{
-                  background: 'rgba(244, 63, 94, 0.15)',
-                  border: '1px solid var(--rose-500)',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: '0.65rem 0.85rem',
-                  fontSize: '0.78rem',
-                  color: 'var(--rose-400)',
-                  marginBottom: '1rem',
+                  background: '#ffffff',
+                  border: '1px solid #d1fae5',
+                  borderRadius: '8px',
+                  width: '32px',
+                  height: '32px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#64748b',
+                  cursor: 'pointer',
                 }}
               >
-                {adminAuthError}
-              </div>
-            )}
+                <X size={18} />
+              </button>
+            </div>
 
-            <form onSubmit={handleVerifyAdminPassword}>
-              <div className="form-group" style={{ marginBottom: '1rem' }}>
-                <label className="form-label">Master Administrator Password</label>
-                <input
-                  type="password"
-                  className="form-input"
-                  placeholder="Enter administrator password..."
-                  value={adminPasswordInput}
-                  onChange={(e) => setAdminPasswordInput(e.target.value)}
-                  autoFocus
-                />
+            {/* Modal Body */}
+            <div style={{ padding: '1.5rem 1.75rem' }}>
+              <p style={{ fontSize: '0.84rem', color: '#475569', lineHeight: 1.5, marginBottom: '1.25rem' }}>
+                Select target operator role and enter the system security password. All roles require cryptographic authentication to ensure accountability across field machines.
+              </p>
+
+              {roleAuthError && (
                 <div
                   style={{
-                    fontSize: '0.72rem',
-                    color: 'var(--text-muted)',
-                    marginTop: '0.4rem',
-                    background: 'rgba(56, 189, 248, 0.08)',
-                    padding: '4px 8px',
-                    borderRadius: '4px',
-                  }}
-                >
-                  Demo Central Master Password: <code style={{ color: 'var(--cyan-400)', fontWeight: 700 }}>admin2026</code>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1.25rem' }}>
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  style={{ flex: 1, padding: '0.55rem' }}
-                  onClick={() => {
-                    setAdminAuthModalOpen(false);
-                    setAdminPasswordInput('');
-                    setAdminAuthError(null);
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="btn-primary"
-                  style={{
-                    flex: 1,
-                    padding: '0.55rem',
-                    background: 'linear-gradient(135deg, #e11d48, #be123c)',
+                    background: '#fef2f2',
+                    border: '1.5px solid #f87171',
+                    borderRadius: '10px',
+                    padding: '0.75rem 1rem',
+                    fontSize: '0.82rem',
+                    color: '#b91c1c',
+                    fontWeight: 600,
+                    marginBottom: '1.25rem',
                     display: 'flex',
                     alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '0.4rem',
+                    gap: '0.5rem',
                   }}
-                  disabled={adminAuthLoading}
                 >
-                  {adminAuthLoading ? 'Verifying...' : 'Unlock Admin Hub'}
-                </button>
-              </div>
-            </form>
+                  <AlertTriangle size={16} color="#b91c1c" />
+                  <span>{roleAuthError}</span>
+                </div>
+              )}
+
+              <form onSubmit={handleVerifyRolePassword}>
+                {/* Target Role Selector */}
+                <div style={{ marginBottom: '1.15rem' }}>
+                  <label
+                    style={{
+                      display: 'block',
+                      fontSize: '0.82rem',
+                      fontWeight: 700,
+                      color: '#1e293b',
+                      marginBottom: '0.45rem',
+                    }}
+                  >
+                    Target Role Persona
+                  </label>
+                  <select
+                    value={pendingTargetRole}
+                    onChange={(e) => setPendingTargetRole(e.target.value as UserRole)}
+                    style={{
+                      width: '100%',
+                      padding: '0.75rem 1rem',
+                      fontSize: '0.9rem',
+                      fontWeight: 600,
+                      color: '#0f172a',
+                      background: '#f8fafc',
+                      border: '1.5px solid #cbd5e1',
+                      borderRadius: '10px',
+                      cursor: 'pointer',
+                      outline: 'none',
+                    }}
+                  >
+                    <option value="DISTRIBUTION_OPERATOR">Distribution Operator (POS Dispense & Stock)</option>
+                    <option value="REGISTRATION_OPERATOR">Registration Operator (Citizen KYC & Enrollment)</option>
+                    <option value="SUPERVISOR">Field Supervisor (Field Approvals & Overrides)</option>
+                    <option value="AUDITOR">Auditor (Read-Only Audit & Trace Oversight)</option>
+                    <option value="ADMINISTRATOR">Administrator (Fleet Supervision & Full System Governance - Online)</option>
+                  </select>
+                  {pendingTargetRole === 'ADMINISTRATOR' && !isOnline && (
+                    <div style={{ fontSize: '0.75rem', color: '#d97706', marginTop: '0.35rem', fontWeight: 600 }}>
+                      ⚠️ Terminal is currently Offline. Administrator access requires online cloud verification.
+                    </div>
+                  )}
+                </div>
+
+                {/* Password Input */}
+                <div style={{ marginBottom: '1.5rem' }}>
+                  <label
+                    style={{
+                      display: 'block',
+                      fontSize: '0.82rem',
+                      fontWeight: 700,
+                      color: '#1e293b',
+                      marginBottom: '0.45rem',
+                    }}
+                  >
+                    Security Password
+                  </label>
+                  <input
+                    type="password"
+                    style={{
+                      width: '100%',
+                      padding: '0.75rem 1rem',
+                      fontSize: '0.95rem',
+                      color: '#0f172a',
+                      background: '#ffffff',
+                      border: '1.5px solid #cbd5e1',
+                      borderRadius: '10px',
+                      outline: 'none',
+                      boxSizing: 'border-box',
+                    }}
+                    placeholder="Enter security password..."
+                    value={rolePasswordInput}
+                    onChange={(e) => setRolePasswordInput(e.target.value)}
+                    autoFocus
+                  />
+                </div>
+
+                {/* Action Buttons */}
+                <div style={{ display: 'flex', gap: '0.85rem' }}>
+                  <button
+                    type="button"
+                    style={{
+                      flex: 1,
+                      padding: '0.75rem 1rem',
+                      fontSize: '0.88rem',
+                      fontWeight: 600,
+                      background: '#f1f5f9',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '10px',
+                      color: '#475569',
+                      cursor: 'pointer',
+                    }}
+                    onClick={() => {
+                      setRoleAuthModalOpen(false);
+                      setRolePasswordInput('');
+                      setRoleAuthError(null);
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    style={{
+                      flex: 1.5,
+                      padding: '0.75rem 1rem',
+                      fontSize: '0.88rem',
+                      fontWeight: 700,
+                      background: '#059669',
+                      border: 'none',
+                      borderRadius: '10px',
+                      color: '#ffffff',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '0.45rem',
+                      boxShadow: '0 4px 14px rgba(5, 150, 105, 0.35)',
+                    }}
+                    disabled={roleAuthLoading}
+                  >
+                    <Lock size={15} />
+                    <span>{roleAuthLoading ? 'Verifying...' : 'Authenticate & Login'}</span>
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
         </div>
       )}
 
-      {/* MODAL 2: Admin Offline Blocked Notice Modal */}
+      {/* MODAL 2: Admin Offline Blocked Notice Modal (White & Green / Amber Theme) */}
       {adminOfflineBlockedModal && (
         <div
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(5, 8, 16, 0.85)',
-            backdropFilter: 'blur(8px)',
+            background: 'rgba(15, 23, 42, 0.75)',
+            backdropFilter: 'blur(10px)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -3374,93 +3585,132 @@ export default function App(): React.ReactElement {
         >
           <div
             style={{
-              background: '#0e1626',
-              border: '1px solid rgba(245, 158, 11, 0.5)',
-              borderRadius: 'var(--radius-lg)',
-              padding: '1.75rem',
-              maxWidth: '460px',
+              background: '#ffffff',
+              border: '1.5px solid #f59e0b',
+              borderRadius: '20px',
+              maxWidth: '480px',
               width: '100%',
-              boxShadow: '0 20px 40px rgba(0, 0, 0, 0.7)',
+              boxShadow: '0 25px 60px -15px rgba(245, 158, 11, 0.25), 0 10px 25px -5px rgba(0, 0, 0, 0.1)',
+              overflow: 'hidden',
+              color: '#0f172a',
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+            <div
+              style={{
+                background: 'linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%)',
+                borderBottom: '1px solid #fde68a',
+                padding: '1.4rem 1.75rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.85rem',
+              }}
+            >
               <div
                 style={{
-                  width: '44px',
-                  height: '44px',
-                  borderRadius: '50%',
-                  background: 'rgba(245, 158, 11, 0.15)',
+                  width: '46px',
+                  height: '46px',
+                  borderRadius: '12px',
+                  background: '#ffffff',
+                  border: '1.5px solid #f59e0b',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
+                  boxShadow: '0 4px 10px rgba(245, 158, 11, 0.15)',
+                  flexShrink: 0,
                 }}
               >
-                <AlertTriangle size={24} color="var(--amber-400)" />
+                <AlertTriangle size={24} color="#d97706" />
               </div>
-              <div>
-                <h3 style={{ fontSize: '1.15rem', fontWeight: 800, color: '#ffffff', margin: 0 }}>
+              <div style={{ flex: 1 }}>
+                <h3 style={{ fontSize: '1.18rem', fontWeight: 800, color: '#92400e', margin: 0 }}>
                   Admin Locked in Offline Mode
                 </h3>
-                <span style={{ fontSize: '0.75rem', color: 'var(--amber-400)' }}>
+                <span style={{ fontSize: '0.76rem', color: '#b45309', fontWeight: 600 }}>
                   Security Protocol Enforcement
                 </span>
               </div>
             </div>
 
-            <p style={{ fontSize: '0.84rem', color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: '1rem' }}>
-              <strong>Access Denied:</strong> In Offline Autonomous Mode, the Administrator control panel cannot be accessed. Central Supabase cloud authentication is strictly mandated to verify root administrator privileges.
-            </p>
+            <div style={{ padding: '1.5rem 1.75rem' }}>
+              <p style={{ fontSize: '0.85rem', color: '#475569', lineHeight: 1.5, marginBottom: '1rem' }}>
+                <strong>Access Restricted:</strong> In Offline Autonomous Mode, the Administrator governance hub cannot be accessed. Central Supabase cloud authentication is strictly mandated to verify root administrator privileges and prevent edge privilege escalation.
+              </p>
 
-            <div
-              style={{
-                background: '#090d16',
-                borderRadius: 'var(--radius-sm)',
-                padding: '0.75rem 1rem',
-                fontSize: '0.76rem',
-                color: 'var(--text-muted)',
-                marginBottom: '1.25rem',
-                borderLeft: '3px solid var(--amber-400)',
-              }}
-            >
-              Edge terminals without network connectivity must operate under <strong>Field Supervisor</strong> or <strong>Distribution Operator</strong> roles using local cryptographic leases.
-            </div>
-
-            <div style={{ display: 'flex', gap: '0.75rem' }}>
-              <button
-                type="button"
-                className="btn-secondary"
-                style={{ flex: 1, padding: '0.55rem' }}
-                onClick={() => setAdminOfflineBlockedModal(false)}
-              >
-                Continue Offline as Field Operator
-              </button>
-              <button
-                type="button"
-                className="btn-primary"
-                style={{ flex: 1, padding: '0.55rem' }}
-                onClick={() => {
-                  setAdminOfflineBlockedModal(false);
-                  handleToggleOnline();
-                  setTimeout(() => {
-                    handleRoleChangeRequest('ADMINISTRATOR');
-                  }, 400);
+              <div
+                style={{
+                  background: '#f8fafc',
+                  borderLeft: '4px solid #059669',
+                  borderRadius: '8px',
+                  padding: '0.85rem 1rem',
+                  fontSize: '0.8rem',
+                  color: '#334155',
+                  marginBottom: '1.5rem',
                 }}
               >
-                Switch Online & Login
-              </button>
+                Edge terminals operating without connectivity should function under <strong>Field Supervisor</strong> or <strong>Distribution Operator</strong> roles using offline cryptographic leases.
+              </div>
+
+              <div style={{ display: 'flex', gap: '0.85rem' }}>
+                <button
+                  type="button"
+                  style={{
+                    flex: 1,
+                    padding: '0.75rem 1rem',
+                    fontSize: '0.85rem',
+                    fontWeight: 600,
+                    background: '#f1f5f9',
+                    border: '1px solid #cbd5e1',
+                    borderRadius: '10px',
+                    color: '#475569',
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => setAdminOfflineBlockedModal(false)}
+                >
+                  Stay Offline
+                </button>
+                <button
+                  type="button"
+                  style={{
+                    flex: 1.5,
+                    padding: '0.75rem 1rem',
+                    fontSize: '0.85rem',
+                    fontWeight: 700,
+                    background: '#059669',
+                    border: 'none',
+                    borderRadius: '10px',
+                    color: '#ffffff',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '0.45rem',
+                    boxShadow: '0 4px 14px rgba(5, 150, 105, 0.35)',
+                  }}
+                  onClick={() => {
+                    setAdminOfflineBlockedModal(false);
+                    handleToggleOnline();
+                    setTimeout(() => {
+                      openRoleAuthModal('ADMINISTRATOR');
+                    }, 400);
+                  }}
+                >
+                  <Wifi size={15} />
+                  <span>Switch Online & Login</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* MODAL 3: Hardware Profile Switcher for 4-Laptop Demo */}
+      {/* MODAL 3: Device Hardware Identity Configuration (White & Green Theme) */}
       {machineModalOpen && (
         <div
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(5, 8, 16, 0.85)',
-            backdropFilter: 'blur(8px)',
+            background: 'rgba(15, 23, 42, 0.75)',
+            backdropFilter: 'blur(10px)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -3470,107 +3720,169 @@ export default function App(): React.ReactElement {
         >
           <div
             style={{
-              background: '#0e1626',
-              border: '1px solid rgba(56, 189, 248, 0.4)',
-              borderRadius: 'var(--radius-lg)',
-              padding: '1.75rem',
+              background: '#ffffff',
+              border: '1.5px solid #10b981',
+              borderRadius: '20px',
               maxWidth: '560px',
               width: '100%',
-              boxShadow: '0 20px 40px rgba(0, 0, 0, 0.7)',
+              boxShadow: '0 25px 60px -15px rgba(5, 150, 105, 0.25), 0 10px 25px -5px rgba(0, 0, 0, 0.1)',
+              overflow: 'hidden',
+              color: '#0f172a',
             }}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.25rem' }}>
-              <div>
-                <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: '#ffffff', margin: 0, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <Monitor size={20} color="var(--cyan-400)" />
-                  Terminal Hardware Identity (4-Laptop Demo)
-                </h3>
-                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
-                  Select which physical machine this browser represents. Each machine operates with isolated customer cards and distinct outbox logs.
-                </p>
+            <div
+              style={{
+                background: 'linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%)',
+                borderBottom: '1px solid #d1fae5',
+                padding: '1.4rem 1.75rem',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
+                <div
+                  style={{
+                    width: '44px',
+                    height: '44px',
+                    borderRadius: '12px',
+                    background: '#ffffff',
+                    border: '1.5px solid #10b981',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Monitor size={22} color="#059669" />
+                </div>
+                <div>
+                  <h3 style={{ fontSize: '1.15rem', fontWeight: 800, color: '#065f46', margin: 0 }}>
+                    Device Hardware Identity Configuration
+                  </h3>
+                  <span style={{ fontSize: '0.78rem', color: '#059669', fontWeight: 600 }}>
+                    Local Machine ID & Telemetry Registration
+                  </span>
+                </div>
               </div>
               <button
                 type="button"
                 onClick={() => setMachineModalOpen(false)}
-                style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
+                style={{
+                  background: '#ffffff',
+                  border: '1px solid #d1fae5',
+                  borderRadius: '8px',
+                  width: '32px',
+                  height: '32px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#64748b',
+                  cursor: 'pointer',
+                }}
               >
-                <X size={20} />
+                <X size={18} />
               </button>
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1.25rem' }}>
-              {PRESET_MACHINES.map((preset) => {
-                const isSelected = preset.id === currentMachineId;
-                return (
-                  <div
-                    key={preset.id}
-                    onClick={() => handleSelectMachineProfile(preset.id)}
-                    style={{
-                      background: isSelected ? 'rgba(56, 189, 248, 0.15)' : '#090d16',
-                      border: isSelected ? '2px solid var(--cyan-500)' : '1px solid var(--border-subtle)',
-                      borderRadius: 'var(--radius-md)',
-                      padding: '0.85rem 1rem',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      transition: 'all 0.2s ease',
-                    }}
-                  >
-                    <div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <div style={{ padding: '1.5rem 1.75rem' }}>
+              <p style={{ fontSize: '0.84rem', color: '#475569', lineHeight: 1.5, marginBottom: '1.25rem' }}>
+                Configure the permanent hardware identity of this physical laptop. Each terminal stores its identity in local browser storage and synchronizes its telemetry, outbox, and logs directly with Supabase.
+              </p>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1.5rem' }}>
+                {PRESET_MACHINES.map((preset) => {
+                  const isSelected = preset.id === currentMachineId;
+                  return (
+                    <div
+                      key={preset.id}
+                      onClick={() => handleSelectMachineProfile(preset.id)}
+                      style={{
+                        background: isSelected ? '#ecfdf5' : '#f8fafc',
+                        border: isSelected ? '2px solid #059669' : '1px solid #e2e8f0',
+                        borderRadius: '12px',
+                        padding: '0.9rem 1.1rem',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        transition: 'all 0.2s ease',
+                      }}
+                    >
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <span
+                            style={{
+                              fontSize: '0.72rem',
+                              fontWeight: 800,
+                              padding: '2px 8px',
+                              borderRadius: '4px',
+                              background: isSelected ? '#059669' : '#e2e8f0',
+                              color: isSelected ? '#ffffff' : '#334155',
+                            }}
+                          >
+                            {preset.id}
+                          </span>
+                          <strong style={{ color: '#0f172a', fontSize: '0.92rem' }}>
+                            {preset.name}
+                          </strong>
+                        </div>
+                        <div style={{ fontSize: '0.76rem', color: '#64748b', marginTop: '0.25rem' }}>
+                          📍 {preset.location}
+                        </div>
+                      </div>
+                      {isSelected ? (
                         <span
                           style={{
                             fontSize: '0.72rem',
                             fontWeight: 800,
-                            padding: '2px 7px',
-                            borderRadius: '4px',
-                            background: isSelected ? 'var(--cyan-500)' : 'rgba(255, 255, 255, 0.1)',
-                            color: isSelected ? '#000000' : 'var(--cyan-400)',
+                            padding: '3px 10px',
+                            borderRadius: '999px',
+                            background: '#d1fae5',
+                            color: '#065f46',
+                            border: '1px solid #a7f3d0',
                           }}
                         >
-                          {preset.id}
+                          THIS DEVICE
                         </span>
-                        <strong style={{ color: '#ffffff', fontSize: '0.9rem' }}>
-                          {preset.name}
-                        </strong>
-                      </div>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-                        📍 {preset.location} · Default Role: <strong>{getRoleShortName(preset.defaultRole)}</strong>
-                      </div>
+                      ) : (
+                        <span style={{ fontSize: '0.76rem', color: '#059669', fontWeight: 600 }}>Assign →</span>
+                      )}
                     </div>
-                    {isSelected ? (
-                      <span className="badge badge-reconciled">ACTIVE NOW</span>
-                    ) : (
-                      <span style={{ fontSize: '0.74rem', color: 'var(--cyan-400)' }}>Select →</span>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <button
-                type="button"
-                className="btn-secondary"
-                style={{ padding: '0.45rem 1rem', fontSize: '0.8rem' }}
-                onClick={() => setMachineModalOpen(false)}
-              >
-                Close
-              </button>
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  style={{
+                    padding: '0.6rem 1.25rem',
+                    fontSize: '0.85rem',
+                    fontWeight: 600,
+                    background: '#059669',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => setMachineModalOpen(false)}
+                >
+                  Done
+                </button>
+              </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* MODAL 4: Central Password Update Modal */}
+      {/* MODAL 4: Central Password Update Modal (White & Green Theme) */}
       {changePasswordModalOpen && (
         <div
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(5, 8, 16, 0.85)',
-            backdropFilter: 'blur(8px)',
+            background: 'rgba(15, 23, 42, 0.75)',
+            backdropFilter: 'blur(10px)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -3580,74 +3892,167 @@ export default function App(): React.ReactElement {
         >
           <div
             style={{
-              background: '#0e1626',
-              border: '1px solid var(--border-subtle)',
-              borderRadius: 'var(--radius-lg)',
-              padding: '1.75rem',
-              maxWidth: '440px',
+              background: '#ffffff',
+              border: '1.5px solid #10b981',
+              borderRadius: '20px',
+              maxWidth: '460px',
               width: '100%',
-              boxShadow: '0 20px 40px rgba(0, 0, 0, 0.7)',
+              boxShadow: '0 25px 60px -15px rgba(5, 150, 105, 0.25), 0 10px 25px -5px rgba(0, 0, 0, 0.1)',
+              overflow: 'hidden',
+              color: '#0f172a',
             }}
           >
-            <h3 style={{ fontSize: '1.15rem', fontWeight: 800, color: '#ffffff', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <Key size={18} color="var(--rose-400)" />
-              Update Supabase Master Password
-            </h3>
-            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: '1rem' }}>
-              Centrally update the administrator password in the Supabase database. All laptops attempting administrator authentication will require this new password.
-            </p>
-
-            {changePasswordStatus && (
-              <div
-                style={{
-                  background: changePasswordStatus.includes('success') ? 'rgba(16, 185, 129, 0.15)' : 'rgba(244, 63, 94, 0.15)',
-                  border: `1px solid ${changePasswordStatus.includes('success') ? 'var(--emerald-500)' : 'var(--rose-500)'}`,
-                  borderRadius: 'var(--radius-sm)',
-                  padding: '0.65rem 0.85rem',
-                  fontSize: '0.78rem',
-                  color: changePasswordStatus.includes('success') ? 'var(--emerald-400)' : 'var(--rose-400)',
-                  marginBottom: '1rem',
-                }}
-              >
-                {changePasswordStatus}
-              </div>
-            )}
-
-            <form onSubmit={handleUpdateAdminPassword}>
-              <div className="form-group" style={{ marginBottom: '1.25rem' }}>
-                <label className="form-label">New Administrator Password</label>
-                <input
-                  type="password"
-                  className="form-input"
-                  placeholder="Enter new master password (min 4 chars)..."
-                  value={newAdminPassword}
-                  onChange={(e) => setNewAdminPassword(e.target.value)}
-                  autoFocus
-                />
-              </div>
-
-              <div style={{ display: 'flex', gap: '0.75rem' }}>
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  style={{ flex: 1, padding: '0.55rem' }}
-                  onClick={() => {
-                    setChangePasswordModalOpen(false);
-                    setNewAdminPassword('');
-                    setChangePasswordStatus(null);
+            <div
+              style={{
+                background: 'linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%)',
+                borderBottom: '1px solid #d1fae5',
+                padding: '1.4rem 1.75rem',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
+                <div
+                  style={{
+                    width: '44px',
+                    height: '44px',
+                    borderRadius: '12px',
+                    background: '#ffffff',
+                    border: '1.5px solid #10b981',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
                   }}
                 >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="btn-primary"
-                  style={{ flex: 1, padding: '0.55rem' }}
-                >
-                  Update Password
-                </button>
+                  <Key size={22} color="#059669" />
+                </div>
+                <div>
+                  <h3 style={{ fontSize: '1.15rem', fontWeight: 800, color: '#065f46', margin: 0 }}>
+                    Update Central Master Password
+                  </h3>
+                  <span style={{ fontSize: '0.78rem', color: '#059669', fontWeight: 600 }}>
+                    Supabase Cloud Security Ledger
+                  </span>
+                </div>
               </div>
-            </form>
+              <button
+                type="button"
+                onClick={() => setChangePasswordModalOpen(false)}
+                style={{
+                  background: '#ffffff',
+                  border: '1px solid #d1fae5',
+                  borderRadius: '8px',
+                  width: '32px',
+                  height: '32px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#64748b',
+                  cursor: 'pointer',
+                }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div style={{ padding: '1.5rem 1.75rem' }}>
+              <p style={{ fontSize: '0.84rem', color: '#475569', lineHeight: 1.5, marginBottom: '1.25rem' }}>
+                Centrally update the master security password in Supabase. All deployed field terminals will immediately require this password to authenticate operator roles.
+              </p>
+
+              {changePasswordStatus && (
+                <div
+                  style={{
+                    background: changePasswordStatus.includes('success') ? '#f0fdf4' : '#fef2f2',
+                    border: `1.5px solid ${changePasswordStatus.includes('success') ? '#10b981' : '#f87171'}`,
+                    borderRadius: '10px',
+                    padding: '0.75rem 1rem',
+                    fontSize: '0.82rem',
+                    color: changePasswordStatus.includes('success') ? '#065f46' : '#b91c1c',
+                    fontWeight: 600,
+                    marginBottom: '1.25rem',
+                  }}
+                >
+                  {changePasswordStatus}
+                </div>
+              )}
+
+              <form onSubmit={handleUpdateAdminPassword}>
+                <div style={{ marginBottom: '1.5rem' }}>
+                  <label
+                    style={{
+                      display: 'block',
+                      fontSize: '0.82rem',
+                      fontWeight: 700,
+                      color: '#1e293b',
+                      marginBottom: '0.45rem',
+                    }}
+                  >
+                    New Master Password
+                  </label>
+                  <input
+                    type="password"
+                    style={{
+                      width: '100%',
+                      padding: '0.75rem 1rem',
+                      fontSize: '0.95rem',
+                      color: '#0f172a',
+                      background: '#ffffff',
+                      border: '1.5px solid #cbd5e1',
+                      borderRadius: '10px',
+                      outline: 'none',
+                      boxSizing: 'border-box',
+                    }}
+                    placeholder="Enter new master password (min 4 chars)..."
+                    value={newAdminPassword}
+                    onChange={(e) => setNewAdminPassword(e.target.value)}
+                    autoFocus
+                  />
+                </div>
+
+                <div style={{ display: 'flex', gap: '0.85rem' }}>
+                  <button
+                    type="button"
+                    style={{
+                      flex: 1,
+                      padding: '0.75rem 1rem',
+                      fontSize: '0.88rem',
+                      fontWeight: 600,
+                      background: '#f1f5f9',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '10px',
+                      color: '#475569',
+                      cursor: 'pointer',
+                    }}
+                    onClick={() => {
+                      setChangePasswordModalOpen(false);
+                      setNewAdminPassword('');
+                      setChangePasswordStatus(null);
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    style={{
+                      flex: 1.5,
+                      padding: '0.75rem 1rem',
+                      fontSize: '0.88rem',
+                      fontWeight: 700,
+                      background: '#059669',
+                      border: 'none',
+                      borderRadius: '10px',
+                      color: '#ffffff',
+                      cursor: 'pointer',
+                      boxShadow: '0 4px 14px rgba(5, 150, 105, 0.35)',
+                    }}
+                  >
+                    Update Central Password
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
         </div>
       )}

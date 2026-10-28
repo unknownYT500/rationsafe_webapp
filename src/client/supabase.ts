@@ -383,12 +383,16 @@ export async function recordDispenseInSupabase(
 }
 
 /**
- * Centrally authenticates the Administrator password against Supabase.
- * In offline mode, the caller must block access.
+ * Centrally authenticates passwords against Supabase.
+ * In offline mode, the caller must block Administrator access.
  */
-export async function verifyAdminPasswordInSupabase(password: string): Promise<{ success: boolean; message?: string }> {
+export async function verifyRolePasswordInSupabase(
+  password: string,
+  targetRole?: string
+): Promise<{ success: boolean; message?: string }> {
   if (!isSupabaseConfigured || !supabase) {
-    return { success: false, message: 'Cloud security ledger not configured.' };
+    const isOk = password === 'adrenaline';
+    return { success: isOk, message: isOk ? undefined : 'Incorrect security password.' };
   }
 
   try {
@@ -399,20 +403,29 @@ export async function verifyAdminPasswordInSupabase(password: string): Promise<{
       .maybeSingle();
 
     if (error) {
-      console.warn('[Supabase] Verify admin error:', error.message);
-      // Fallback check
-      return { success: password === 'admin2026', message: password === 'admin2026' ? undefined : 'Incorrect password.' };
+      console.warn('[Supabase] Verify role error:', error.message);
+      const isOk = password === 'adrenaline';
+      return { success: isOk, message: isOk ? undefined : 'Incorrect security password.' };
     }
 
-    const storedHash = data?.data?.password_hash || 'admin2026';
+    const storedHash = data?.data?.password_hash || 'adrenaline';
     if (password === storedHash) {
       return { success: true };
     }
-    return { success: false, message: 'Incorrect administrator password.' };
+    return { success: false, message: 'Incorrect security password.' };
   } catch (err: any) {
-    console.warn('[Supabase] verifyAdminPassword exception:', err);
-    return { success: password === 'admin2026', message: password === 'admin2026' ? undefined : 'Authentication error.' };
+    console.warn('[Supabase] verifyRolePassword exception:', err);
+    const isOk = password === 'adrenaline';
+    return { success: isOk, message: isOk ? undefined : 'Authentication error.' };
   }
+}
+
+/**
+ * Centrally authenticates the Administrator password against Supabase.
+ * In offline mode, the caller must block access.
+ */
+export async function verifyAdminPasswordInSupabase(password: string): Promise<{ success: boolean; message?: string }> {
+  return verifyRolePasswordInSupabase(password, 'ADMINISTRATOR');
 }
 
 /**

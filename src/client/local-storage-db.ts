@@ -45,7 +45,7 @@ export interface MachineEventLog {
   machine_id: string;
   session_id: string;
   machine_name: string;
-  event_type: 'MACHINE_OFFLINE' | 'MACHINE_ONLINE' | 'BATCH_SYNC' | 'DISPENSE' | 'CARD_ENROLLED' | 'SUPERVISOR_OVERRIDE';
+  event_type: 'MACHINE_OFFLINE' | 'MACHINE_ONLINE' | 'BATCH_SYNC' | 'DISPENSE' | 'CARD_ENROLLED' | 'SUPERVISOR_OVERRIDE' | 'ROLE_LOGIN';
   title: string;
   message: string;
   timestamp: string;
