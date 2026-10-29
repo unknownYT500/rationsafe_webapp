@@ -90,14 +90,15 @@ export async function fetchCloudDataFromSupabase(): Promise<{
   if (!isSupabaseConfigured || !supabase) return null;
 
   try {
-    const [cardsRes, lotsRes, nodesRes, regsRes, auditRes, ledgerRes, personsRes] = await Promise.all([
+    const [cardsRes, lotsRes, nodesRes, regsRes, auditRes, ledgerRes, personsRes, householdRes] = await Promise.all([
       supabase.from('cards').select('*'),
       supabase.from('grain_lots').select('*'),
       supabase.from('distribution_nodes').select('*'),
-      supabase.from('registrations').select('*'),
+      supabase.from('registrations').select('*').order('created_at', { ascending: false }),
       supabase.from('audit_events').select('*').order('created_at', { ascending: false }).limit(50),
       supabase.from('card_quota_ledger').select('*'),
       supabase.from('persons').select('*'),
+      supabase.from('household_profiles').select('*'),
     ]);
 
     // If any fundamental table is missing from schema cache, gracefully return null
@@ -106,28 +107,34 @@ export async function fetchCloudDataFromSupabase(): Promise<{
     }
 
     const personsMap = new Map<string, any>((personsRes.data || []).map((p: any) => [p.id, p]));
+    const householdMap = new Map<string, any>((householdRes?.data || []).map((h: any) => [h.person_id, h]));
     const ledgerMap = new Map<string, any>((ledgerRes.data || []).map((l: any) => [l.card_id, l]));
 
     const mappedCards: CardBeneficiary[] = (cardsRes.data || []).map((c: any) => {
       const person = personsMap.get(c.person_id) || {};
+      const household = householdMap.get(c.person_id) || {};
       const ledger = ledgerMap.get(c.id) || {};
-      const allocated = Number(ledger.allocated_quantity || 30);
-      const consumed = Number(ledger.consumed_quantity || 0);
+      const allocated = Number(ledger.allocated_qty || ledger.allocated_quantity || 40);
+      const consumed = Number(ledger.consumed_qty || ledger.consumed_quantity || 0);
       const remaining = Number(ledger.remaining_quantity ?? allocated - consumed);
+
+      const fName = person.first_name || '';
+      const lName = person.last_name || '';
+      const fullName = (fName || lName) ? `${fName} ${lName}`.trim() : `Citizen (${c.id})`;
 
       return {
         id: c.id,
         person_id: c.person_id,
         status: c.status || 'ACTIVE',
         issued_at: c.issued_at || c.created_at || new Date().toISOString(),
-        first_name: person.first_name || 'Beneficiary',
-        last_name: person.last_name || '',
-        full_name: person.first_name ? `${person.first_name} ${person.last_name || ''}`.trim() : 'Verified Citizen',
+        first_name: fName || 'Beneficiary',
+        last_name: lName,
+        full_name: fullName,
         phone_number: person.phone_number || '',
-        family_count: 3,
-        address: person.address || 'Registered Residence',
-        city: person.city || 'District Depot',
-        state: person.state || 'State PDS',
+        family_count: Number(household.family_count || 4),
+        address: household.address || person.address || 'Plot 42, Kalyanpur Village',
+        city: household.city || person.city || 'Kanpur',
+        state: household.state || person.state || 'Uttar Pradesh',
         allocated_qty: allocated,
         consumed_qty: consumed,
         remaining_qty: remaining,
@@ -243,6 +250,7 @@ export async function insertRegistrationToSupabase(reg: {
 
 /**
  * Updates an approved registration and creates the corresponding person, card, and quota ledger in Supabase.
+ * Uses atomic RPC fn_approve_registration with full schema fallback.
  */
 export async function approveRegistrationInSupabase(
   regId: string,
@@ -252,7 +260,17 @@ export async function approveRegistrationInSupabase(
   try {
     const now = new Date().toISOString();
 
-    // 1. Update registration
+    // 1. Try atomic database RPC function first (aligned with mobile app)
+    const { data: rpcRes, error: rpcErr } = await supabase.rpc('fn_approve_registration', {
+      p_reg_id: regId,
+      p_actor_id: 'admin',
+    });
+
+    if (!rpcErr && rpcRes && (rpcRes as any).success) {
+      return true;
+    }
+
+    // 2. Direct tables fallback ensuring persons, household_profiles, cards, and quota_leases are synchronized
     await supabase.from('registrations').update({
       status: 'APPROVED',
       card_id: approvedCard.id,
@@ -260,7 +278,7 @@ export async function approveRegistrationInSupabase(
       updated_at: now,
     }).eq('id', regId);
 
-    // 2. Upsert person
+    // Upsert person
     await supabase.from('persons').upsert({
       id: approvedCard.person_id,
       first_name: approvedCard.first_name,
@@ -270,7 +288,19 @@ export async function approveRegistrationInSupabase(
       created_at: now,
     });
 
-    // 3. Upsert card
+    // Upsert household_profile
+    await supabase.from('household_profiles').upsert({
+      id: `prof_${approvedCard.person_id.replace(/^person_/, '')}`,
+      person_id: approvedCard.person_id,
+      family_count: approvedCard.family_count || 4,
+      yearly_income: 48000,
+      address: approvedCard.address || 'Plot 42, Kalyanpur Village',
+      city: approvedCard.city || 'Kanpur',
+      state: approvedCard.state || 'Uttar Pradesh',
+      created_at: now,
+    });
+
+    // Upsert card
     await supabase.from('cards').upsert({
       id: approvedCard.id,
       person_id: approvedCard.person_id,
@@ -279,29 +309,32 @@ export async function approveRegistrationInSupabase(
       created_at: now,
     });
 
-    // 4. Upsert quota ledger
-    await supabase.from('card_quota_ledger').upsert({
-      id: `ledger-${approvedCard.id}`,
+    // Upsert quota_leases
+    await supabase.from('quota_leases').upsert({
+      id: `quota_${approvedCard.id.replace(/^card_/, '')}`,
       card_id: approvedCard.id,
-      period: now.slice(0, 7),
-      allocated_quantity: approvedCard.allocated_qty,
-      consumed_quantity: approvedCard.consumed_qty || 0,
-      remaining_quantity: approvedCard.remaining_qty,
+      node_id: 'node-alpha-001',
+      allocated_qty: approvedCard.allocated_qty || 40,
+      consumed_qty: approvedCard.consumed_qty || 0,
+      period_start: now.slice(0, 10),
+      created_at: now,
       updated_at: now,
     });
 
-    // 5. Audit event
+    // Audit event
     await supabase.from('audit_events').insert({
-      id: `audit-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-      actor_id: 'supervisor-01',
-      action: 'CARD_ISSUED',
-      resource_type: 'card',
-      resource_id: approvedCard.id,
+      id: `audit_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      actor_id: 'admin',
+      action: 'REGISTRATION_APPROVED',
+      resource_type: 'REGISTRATION',
+      resource_id: regId,
       details: {
-        message: `Card approved and ration quota (${approvedCard.allocated_qty}kg) allocated to ${approvedCard.full_name}`,
-        quota_allocated: approvedCard.allocated_qty,
+        card_id: approvedCard.id,
+        person_id: approvedCard.person_id,
+        allocated_quota: approvedCard.allocated_qty,
       },
       timestamp: now,
+      created_at: now,
     });
 
     return true;
@@ -313,6 +346,7 @@ export async function approveRegistrationInSupabase(
 
 /**
  * Records a dispense transaction in Supabase, updating stock and the beneficiary quota ledger.
+ * Uses atomic RPC fn_online_dispense with full schema fallback.
  */
 export async function recordDispenseInSupabase(
   card: CardBeneficiary,
@@ -323,21 +357,33 @@ export async function recordDispenseInSupabase(
   if (!isSupabaseConfigured || !supabase) return false;
   try {
     const now = new Date().toISOString();
+    const idemKey = `idem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    // 1. Try atomic database RPC function first (aligned with mobile app)
+    const { data: rpcRes, error: rpcErr } = await supabase.rpc('fn_online_dispense', {
+      p_idempotency_key: idemKey,
+      p_card_id: card.id,
+      p_lot_id: lotId,
+      p_node_id: nodeId || 'node-alpha-001',
+      p_quantity: quantity,
+      p_actor_id: 'distribution-operator',
+    });
+
+    if (!rpcErr && rpcRes && (rpcRes as any).success) {
+      return true;
+    }
+
+    // 2. Direct tables fallback
     const newConsumed = card.consumed_qty + quantity;
     const newRemaining = Math.max(0, card.remaining_qty - quantity);
 
-    // 1. Update card quota ledger
-    await supabase.from('card_quota_ledger').upsert({
-      id: `ledger-${card.id}`,
-      card_id: card.id,
-      period: now.slice(0, 7),
-      allocated_quantity: card.allocated_qty,
-      consumed_quantity: newConsumed,
-      remaining_quantity: newRemaining,
+    // Update quota_leases table
+    await supabase.from('quota_leases').update({
+      consumed_qty: newConsumed,
       updated_at: now,
-    });
+    }).eq('card_id', card.id);
 
-    // 2. Fetch and decrement grain lot remaining stock
+    // Fetch and decrement grain lot remaining stock
     const { data: lotData } = await supabase.from('grain_lots').select('remaining_quantity').eq('id', lotId).maybeSingle();
     if (lotData) {
       const updatedStock = Math.max(0, Number(lotData.remaining_quantity) - quantity);
@@ -347,7 +393,7 @@ export async function recordDispenseInSupabase(
       }).eq('id', lotId);
     }
 
-    // 3. Insert transaction
+    // Insert transaction
     const txnId = `txn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     await supabase.from('distribution_transactions').insert({
       id: txnId,
@@ -356,10 +402,12 @@ export async function recordDispenseInSupabase(
       lot_id: lotId,
       quantity,
       state: 'RECONCILED',
+      idempotency_key: idemKey,
       created_at: now,
+      updated_at: now,
     });
 
-    // 4. Insert audit event
+    // Insert audit event
     await supabase.from('audit_events').insert({
       id: `audit_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
       actor_id: nodeId,
@@ -373,6 +421,7 @@ export async function recordDispenseInSupabase(
         remaining_quota: newRemaining,
       },
       timestamp: now,
+      created_at: now,
     });
 
     return true;
@@ -381,6 +430,22 @@ export async function recordDispenseInSupabase(
     return false;
   }
 }
+
+/**
+ * Deletes an unapproved registration from Supabase (aligned with mobile app).
+ */
+export async function deleteRegistrationFromSupabase(regId: string): Promise<boolean> {
+  if (!isSupabaseConfigured || !supabase) return false;
+  try {
+    const { error } = await supabase.from('registrations').delete().eq('id', regId);
+    if (!error) return true;
+    const { data: rpcRes } = await supabase.rpc('fn_delete_registration', { p_reg_id: regId });
+    return Boolean((rpcRes as any)?.success);
+  } catch {
+    return false;
+  }
+}
+
 
 /**
  * Centrally authenticates passwords against Supabase.
