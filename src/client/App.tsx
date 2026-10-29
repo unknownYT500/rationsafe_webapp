@@ -273,6 +273,8 @@ export default function App(): React.ReactElement {
   const selectedNodeIdRef = useRef(selectedNodeId);
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState<boolean>(false);
   const dataRequestRef = useRef(0);
+  const apiReachableRef = useRef<boolean | null>(null);
+  const lastApiProbeTimeRef = useRef<number>(0);
 
   // Field Machine Identity (for 4-laptop demonstration)
   const [currentMachineId, setCurrentMachineId] = useState<string>(() => {
@@ -400,22 +402,39 @@ export default function App(): React.ReactElement {
       let finalAudit: AuditLogItem[] = [...localDb.auditLogs];
       let finalMetrics = { ...localDb.metrics };
 
-      // Optional remote API check (if backend is active)
-      try {
-        const [cardsRes, lotsRes, nodesRes, regsRes, auditRes] = await Promise.all([
-          safeFetchJson<CardBeneficiary[]>(`/api/v1/cards?node_id=${encodeURIComponent(nodeId)}`),
-          safeFetchJson<GrainLotItem[]>('/api/v1/lots'),
-          safeFetchJson<NodeItem[]>('/api/v1/nodes'),
-          safeFetchJson<RegistrationItem[]>('/api/v1/registrations'),
-          safeFetchJson<AuditLogItem[]>('/api/v1/audit'),
-        ]);
+      // Optional remote API check (gate with periodic health check to prevent flooding errors when backend is inactive)
+      const now = Date.now();
+      const shouldProbeApi =
+        apiReachableRef.current === true ||
+        apiReachableRef.current === null ||
+        now - lastApiProbeTimeRef.current > 60000;
 
-        if (cardsRes.ok && Array.isArray(cardsRes.data) && cardsRes.data.length > 0) finalCards = cardsRes.data;
-        if (lotsRes.ok && Array.isArray(lotsRes.data) && lotsRes.data.length > 0) finalLots = lotsRes.data;
-        if (nodesRes.ok && Array.isArray(nodesRes.data) && nodesRes.data.length > 0) finalNodes = nodesRes.data;
-        if (regsRes.ok && Array.isArray(regsRes.data) && regsRes.data.length > 0) finalRegs = regsRes.data;
-        if (auditRes.ok && Array.isArray(auditRes.data) && auditRes.data.length > 0) finalAudit = auditRes.data;
-      } catch {}
+      if (shouldProbeApi) {
+        try {
+          lastApiProbeTimeRef.current = now;
+          const health = await safeFetchJson<{ status: string }>('/api/health');
+          if (health.ok) {
+            apiReachableRef.current = true;
+            const [cardsRes, lotsRes, nodesRes, regsRes, auditRes] = await Promise.all([
+              safeFetchJson<CardBeneficiary[]>(`/api/v1/cards?node_id=${encodeURIComponent(nodeId)}`),
+              safeFetchJson<GrainLotItem[]>('/api/v1/lots'),
+              safeFetchJson<NodeItem[]>('/api/v1/nodes'),
+              safeFetchJson<RegistrationItem[]>('/api/v1/registrations'),
+              safeFetchJson<AuditLogItem[]>('/api/v1/audit'),
+            ]);
+
+            if (cardsRes.ok && Array.isArray(cardsRes.data) && cardsRes.data.length > 0) finalCards = cardsRes.data;
+            if (lotsRes.ok && Array.isArray(lotsRes.data) && lotsRes.data.length > 0) finalLots = lotsRes.data;
+            if (nodesRes.ok && Array.isArray(nodesRes.data) && nodesRes.data.length > 0) finalNodes = nodesRes.data;
+            if (regsRes.ok && Array.isArray(regsRes.data) && regsRes.data.length > 0) finalRegs = regsRes.data;
+            if (auditRes.ok && Array.isArray(auditRes.data) && auditRes.data.length > 0) finalAudit = auditRes.data;
+          } else {
+            apiReachableRef.current = false;
+          }
+        } catch {
+          apiReachableRef.current = false;
+        }
+      }
 
       // Overlay live cloud data from Supabase if provisioned and online
       try {

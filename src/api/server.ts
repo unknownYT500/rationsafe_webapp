@@ -20,7 +20,6 @@ import {
   transactionRateLimiter,
 } from './security.js';
 import {
-  authenticateAccount,
   createWebAuthnChallenge,
   requireAuth,
   requireRole,
@@ -812,6 +811,43 @@ export function createServer(customDb?: CentralDatabase, options: CreateServerOp
 
   app.get('/api/v1/lots', ...staffOnly(ALL_STAFF), (_req, res) => {
     res.json(db.listLots());
+  });
+
+  app.get('/api/v1/cards', ...staffOnly(ALL_STAFF), (req, res) => {
+    const rawCards = db.listCards();
+    const persons = db.listPersons();
+    const ledgers = db.listQuotaLedger();
+    const personsMap = new Map(persons.map((p) => [p.id, p]));
+    const ledgerMap = new Map(ledgers.map((l) => [l.card_id, l]));
+
+    const mapped = rawCards.map((c) => {
+      const p = personsMap.get(c.person_id);
+      const l = ledgerMap.get(c.id);
+      const allocated = Number(l?.allocated_quantity || 30);
+      const consumed = Number(l?.consumed_quantity || 0);
+      return {
+        id: c.id,
+        person_id: c.person_id,
+        status: c.status,
+        issued_at: c.issued_at,
+        first_name: p?.first_name || 'Beneficiary',
+        last_name: p?.last_name || '',
+        full_name: p ? `${p.first_name} ${p.last_name || ''}`.trim() : 'Verified Citizen',
+        phone_number: p?.phone_number || '',
+        family_count: 3,
+        address: 'District Depot',
+        city: 'Kanpur',
+        state: 'UP',
+        allocated_qty: allocated,
+        consumed_qty: consumed,
+        remaining_qty: Number(l?.remaining_quantity ?? allocated - consumed),
+      };
+    });
+    res.json(mapped);
+  });
+
+  app.get('/api/v1/registrations', ...staffOnly(ALL_STAFF), (_req, res) => {
+    res.json(db.listRegistrations());
   });
 
   app.post('/api/v1/lots', ...staffOnly(ADMIN_ONLY), transactionRateLimiter, (req, res) => {
