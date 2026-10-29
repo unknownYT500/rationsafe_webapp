@@ -96,6 +96,63 @@ export default function handler(req: any, res: any) {
     }
   }
 
+  // 3. Online Central Transaction Handler (Direct Supabase Ledger Execution)
+  if (req.method === 'POST' && (urlPath === '/api/v1/transactions' || urlPath === '/v1/transactions')) {
+    // If client does not provide a custom Bearer token or is operating on the cloud ledger, execute atomic dispense on Supabase
+    if (!req.headers?.authorization || !req.headers.authorization.startsWith('Bearer eyJ')) {
+      const body = req.body || {};
+      const cardId = body.card_id;
+      const lotId = body.lot_id;
+      const nodeId = body.node_id || 'node-alpha-001';
+      const quantity = Number(body.quantity || 0);
+
+      if (cardId && lotId && quantity > 0) {
+        const supabaseUrl = process.env.VITE_SUPABASE_URL || 'https://byxvxvsvhiyeryavgafx.supabase.co';
+        const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ5eHZ4dnN2aGl5ZXJ5YXZnYWZ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIwNzU3MjksImV4cCI6MjEwNzY1MTcyOX0.UU-Qs8cO4bcDZ-5qZA9xgEDRjLY1IDr65ZMaoyK3AsA';
+        const idemKey = req.headers?.['idempotency-key'] || `online_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+        fetch(`${supabaseUrl}/rest/v1/rpc/fn_online_dispense`, {
+          method: 'POST',
+          headers: {
+            'apikey': supabaseKey,
+            'Authorization': `Bearer ${supabaseKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            p_idempotency_key: idemKey,
+            p_card_id: cardId,
+            p_lot_id: lotId,
+            p_node_id: nodeId,
+            p_quantity: quantity,
+            p_actor_id: req.headers?.['x-user-id'] || 'distribution-operator',
+          }),
+        }).then(async (rpcRes) => {
+          if (rpcRes.ok) {
+            const data = await rpcRes.json();
+            return sendJson(res, 200, {
+              success: true,
+              state: 'RECONCILED',
+              data,
+            });
+          } else {
+            const err = await rpcRes.json().catch(() => ({}));
+            return sendJson(res, 400, {
+              code: err.code || 'ERR_201',
+              message: err.message || 'Dispense could not be authorized',
+            });
+          }
+        }).catch((e) => {
+          return sendJson(res, 500, {
+            code: 'ERR_500',
+            message: e?.message || 'Serverless database error',
+          });
+        });
+        return;
+      }
+    }
+  }
+
+
   // 3. Ensure req.socket and req.connection have remoteAddress for Express trust proxy & forwarded
   const clientIp =
     (typeof req.headers?.['x-forwarded-for'] === 'string'

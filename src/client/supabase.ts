@@ -353,8 +353,10 @@ export async function recordDispenseInSupabase(
   lotId: string,
   quantity: number,
   nodeId: string
-): Promise<boolean> {
-  if (!isSupabaseConfigured || !supabase) return false;
+): Promise<{ success: boolean; data?: any; error?: string; code?: string }> {
+  if (!isSupabaseConfigured || !supabase) {
+    return { success: false, error: 'Supabase cloud client not configured', code: 'ERR_NOT_CONFIGURED' };
+  }
   try {
     const now = new Date().toISOString();
     const idemKey = `idem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -369,8 +371,17 @@ export async function recordDispenseInSupabase(
       p_actor_id: 'distribution-operator',
     });
 
-    if (!rpcErr && rpcRes && (rpcRes as any).success) {
-      return true;
+    if (!rpcErr && rpcRes) {
+      const parsed = typeof rpcRes === 'string' ? JSON.parse(rpcRes) : rpcRes;
+      if (parsed.success) {
+        return { success: true, data: parsed };
+      } else if (parsed.code || parsed.error) {
+        return { success: false, code: parsed.code || 'ERR_201', error: parsed.error || parsed.message };
+      }
+    }
+
+    if (rpcErr && !rpcErr.message?.includes('function fn_online_dispense does not exist')) {
+      console.warn('[Supabase RPC] fn_online_dispense note:', rpcErr.message);
     }
 
     // 2. Direct tables fallback
@@ -384,9 +395,10 @@ export async function recordDispenseInSupabase(
     }).eq('card_id', card.id);
 
     // Fetch and decrement grain lot remaining stock
+    let updatedStock = 0;
     const { data: lotData } = await supabase.from('grain_lots').select('remaining_quantity').eq('id', lotId).maybeSingle();
     if (lotData) {
-      const updatedStock = Math.max(0, Number(lotData.remaining_quantity) - quantity);
+      updatedStock = Math.max(0, Number(lotData.remaining_quantity) - quantity);
       await supabase.from('grain_lots').update({
         remaining_quantity: updatedStock,
         updated_at: now,
@@ -398,7 +410,7 @@ export async function recordDispenseInSupabase(
     await supabase.from('distribution_transactions').insert({
       id: txnId,
       card_id: card.id,
-      node_id: nodeId,
+      node_id: nodeId || 'node-alpha-001',
       lot_id: lotId,
       quantity,
       state: 'RECONCILED',
@@ -410,7 +422,7 @@ export async function recordDispenseInSupabase(
     // Insert audit event
     await supabase.from('audit_events').insert({
       id: `audit_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-      actor_id: nodeId,
+      actor_id: nodeId || 'node-alpha-001',
       action: 'GRAIN_DISPENSED_ONLINE',
       resource_type: 'TRANSACTION',
       resource_id: txnId,
@@ -424,12 +436,24 @@ export async function recordDispenseInSupabase(
       created_at: now,
     });
 
-    return true;
-  } catch (e) {
+    return {
+      success: true,
+      data: {
+        transaction_id: txnId,
+        card_id: card.id,
+        lot_id: lotId,
+        quantity,
+        remaining_card_qty: newRemaining,
+        remaining_lot_qty: updatedStock,
+        state: 'RECONCILED',
+      },
+    };
+  } catch (e: any) {
     console.warn('[Supabase] Record dispense in cloud error:', e);
-    return false;
+    return { success: false, error: e?.message || 'Database transaction error', code: 'ERR_DB_FAILED' };
   }
 }
+
 
 /**
  * Deletes an unapproved registration from Supabase (aligned with mobile app).

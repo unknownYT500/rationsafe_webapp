@@ -1047,7 +1047,46 @@ export default function App(): React.ReactElement {
 
     try {
       if (isOnline) {
-        // Online Central Transaction
+        // 1. Primary Online Central Transaction: Commit directly to Supabase cloud database ledger
+        if (isSupabaseConfigured && activeBeneficiary) {
+          const cloudResult = await recordDispenseInSupabase(
+            activeBeneficiary,
+            distLotId,
+            distQuantity,
+            selectedNodeId
+          );
+
+          if (cloudResult.success) {
+            // Synchronously mirror to local encrypted storage for offline fallback cache
+            const localResult = await recordDispenseAsync(selectedCardId, distLotId, selectedNodeId, distQuantity, true);
+            setDistCurrentState('RECONCILED');
+            setDistExecutionSummary({
+              success: true,
+              mode: 'ONLINE_CENTRAL',
+              state: 'RECONCILED',
+              title: 'Grain Successfully Dispensed & Reconciled',
+              explanation: `Successfully disbursed ${distQuantity} kg of ${activeLot?.name || 'grain'} to ${activeBeneficiary?.full_name || 'Beneficiary'}. The transaction was authenticated and committed to the Supabase cloud ledger.`,
+              rawDetails: cloudResult.data || localResult,
+            });
+            await loadAllData(selectedCardId, selectedNodeId);
+            return;
+          } else if (cloudResult.code) {
+            setDistCurrentState('FAIL_REASON');
+            const diag = getFailureDiagnostic(cloudResult.code, cloudResult.error);
+            setDistExecutionSummary({
+              success: false,
+              mode: 'ONLINE_CENTRAL',
+              state: 'FAIL_REASON',
+              title: diag.title,
+              explanation: diag.explanation,
+              remediation: diag.remediation,
+              rawDetails: { code: cloudResult.code, error: cloudResult.error },
+            });
+            return;
+          }
+        }
+
+        // 2. Standalone or Local Node API Fallback
         const res = await safeFetchJson('/api/v1/transactions', {
           method: 'POST',
           headers: {
@@ -1072,6 +1111,7 @@ export default function App(): React.ReactElement {
             explanation: `Successfully disbursed ${distQuantity} kg of ${activeLot?.name || 'grain'} to ${activeBeneficiary?.full_name || 'Beneficiary'}. The transaction was authenticated and committed to the central ledger.`,
             rawDetails: res.data,
           });
+          await loadAllData(selectedCardId, selectedNodeId);
         } else if (res.data?.code) {
           setDistCurrentState('FAIL_REASON');
           const diag = getFailureDiagnostic(res.data.code, res.data.message);
@@ -1086,9 +1126,6 @@ export default function App(): React.ReactElement {
           });
         } else {
           const result = await recordDispenseAsync(selectedCardId, distLotId, selectedNodeId, distQuantity, true);
-          if (activeBeneficiary) {
-            await recordDispenseInSupabase(activeBeneficiary, distLotId, distQuantity, selectedNodeId);
-          }
           setDistCurrentState('RECONCILED');
           setDistExecutionSummary({
             success: true,
@@ -1098,8 +1135,10 @@ export default function App(): React.ReactElement {
             explanation: `Disbursed ${distQuantity} kg of ${activeLot?.name || 'grain'} to ${activeBeneficiary?.full_name || 'Beneficiary'}. Quota updated and permanently committed to the encrypted local ledger.`,
             rawDetails: result,
           });
+          await loadAllData(selectedCardId, selectedNodeId);
         }
       } else {
+
         // Offline Edge Node Issuance (Ed25519 Token)
         const res = await safeFetchJson(`/api/v1/edge-nodes/${selectedNodeId}/issue`, {
           method: 'POST',
