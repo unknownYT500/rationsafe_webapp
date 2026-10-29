@@ -412,25 +412,29 @@ export default function App(): React.ReactElement {
       if (shouldProbeApi) {
         try {
           lastApiProbeTimeRef.current = now;
-          const health = await safeFetchJson<{ status: string }>('/api/health');
+          const health = await safeFetchJson<{ status: string; mode?: string }>('/api/health');
           if (health.ok) {
             apiReachableRef.current = true;
-            const [cardsRes, lotsRes, nodesRes, regsRes, auditRes] = await Promise.all([
-              safeFetchJson<CardBeneficiary[]>(`/api/v1/cards?node_id=${encodeURIComponent(nodeId)}`),
-              safeFetchJson<GrainLotItem[]>('/api/v1/lots'),
-              safeFetchJson<NodeItem[]>('/api/v1/nodes'),
-              safeFetchJson<RegistrationItem[]>('/api/v1/registrations'),
-              safeFetchJson<AuditLogItem[]>('/api/v1/audit'),
-            ]);
+            // In cloud serverless mode, Supabase is the unified cloud ledger; probe local endpoints if in local standalone mode or authenticated
+            if (health.data?.mode !== 'serverless-edge' || currentAuthToken) {
+              const [cardsRes, lotsRes, nodesRes, regsRes, auditRes] = await Promise.all([
+                safeFetchJson<CardBeneficiary[]>(`/api/v1/cards?node_id=${encodeURIComponent(nodeId)}`),
+                safeFetchJson<GrainLotItem[]>('/api/v1/lots'),
+                safeFetchJson<NodeItem[]>('/api/v1/nodes'),
+                safeFetchJson<RegistrationItem[]>('/api/v1/registrations'),
+                safeFetchJson<AuditLogItem[]>('/api/v1/audit'),
+              ]);
 
-            if (cardsRes.ok && Array.isArray(cardsRes.data) && cardsRes.data.length > 0) finalCards = cardsRes.data;
-            if (lotsRes.ok && Array.isArray(lotsRes.data) && lotsRes.data.length > 0) finalLots = lotsRes.data;
-            if (nodesRes.ok && Array.isArray(nodesRes.data) && nodesRes.data.length > 0) finalNodes = nodesRes.data;
-            if (regsRes.ok && Array.isArray(regsRes.data) && regsRes.data.length > 0) finalRegs = regsRes.data;
-            if (auditRes.ok && Array.isArray(auditRes.data) && auditRes.data.length > 0) finalAudit = auditRes.data;
+              if (cardsRes.ok && Array.isArray(cardsRes.data) && cardsRes.data.length > 0) finalCards = cardsRes.data;
+              if (lotsRes.ok && Array.isArray(lotsRes.data) && lotsRes.data.length > 0) finalLots = lotsRes.data;
+              if (nodesRes.ok && Array.isArray(nodesRes.data) && nodesRes.data.length > 0) finalNodes = nodesRes.data;
+              if (regsRes.ok && Array.isArray(regsRes.data) && regsRes.data.length > 0) finalRegs = regsRes.data;
+              if (auditRes.ok && Array.isArray(auditRes.data) && auditRes.data.length > 0) finalAudit = auditRes.data;
+            }
           } else {
             apiReachableRef.current = false;
           }
+
         } catch {
           apiReachableRef.current = false;
         }
