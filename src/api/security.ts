@@ -393,8 +393,24 @@ function makeStore(prefix: string): Store | undefined {
   });
 }
 
+function getClientIp(req: Request): string {
+  try {
+    const forwarded = req.headers['x-forwarded-for'];
+    if (typeof forwarded === 'string' && forwarded.length > 0) {
+      return forwarded.split(',')[0].trim();
+    }
+    const realIp = req.headers['x-real-ip'];
+    if (typeof realIp === 'string' && realIp.length > 0) {
+      return realIp.trim();
+    }
+    return req.ip || req.socket?.remoteAddress || '127.0.0.1';
+  } catch {
+    return '127.0.0.1';
+  }
+}
+
 /** IP key with IPv6 subnet masking (an attacker with a /64 can't rotate addresses). */
-const ipKey = (req: Request): string => ipKeyGenerator(req.ip ?? '0.0.0.0');
+const ipKey = (req: Request): string => ipKeyGenerator(getClientIp(req));
 
 /** Per-terminal / per-user key once authenticated; falls back to IP. */
 const principalKey = (req: Request): string =>
@@ -442,7 +458,7 @@ export const globalRateLimiter = makeLimiter({
   windowMs: 15 * 60 * 1000,
   limit: 300,
   failOpen: true,
-  skip: (req) => req.path === '/healthz',
+  skip: (req) => req.path === '/healthz' || req.path === '/api/health' || req.path === '/health',
   code: 'ERR_RATE_LIMIT_EXCEEDED',
   message: 'Too many requests. Please wait before retrying.',
 });
