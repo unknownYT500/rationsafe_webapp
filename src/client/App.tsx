@@ -1410,17 +1410,6 @@ export default function App(): React.ReactElement {
       {/* Top Navigation Bar */}
       <header className="top-navbar">
         <div className="brand-section">
-          {/* Sidebar Collapse Toggle Button (Desktop) */}
-          <button
-            type="button"
-            className="sidebar-toggle-btn desktop-only"
-            onClick={toggleSidebar}
-            title={sidebarCollapsed ? "Expand Command Sidebar" : "Collapse Command Sidebar"}
-            aria-label="Toggle Command Sidebar"
-          >
-            {sidebarCollapsed ? <Menu size={18} /> : <ChevronLeft size={18} />}
-          </button>
-
           <div className="brand-icon">
             <Wheat size={22} color="#ffffff" />
           </div>
@@ -1649,7 +1638,7 @@ export default function App(): React.ReactElement {
       <aside className={`mobile-drawer ${mobileDrawerOpen ? 'open' : ''}`} aria-hidden={!mobileDrawerOpen}>
         <div className="mobile-drawer-header">
           <div className="mobile-drawer-title">
-            <Sliders size={18} color="var(--cyan-400)" />
+            <Sliders size={18} color="#166c52" />
             <span>Terminal & System Controls</span>
           </div>
           <button
@@ -1666,14 +1655,14 @@ export default function App(): React.ReactElement {
           {/* Section 1: Active Role Persona */}
           <div className="drawer-section">
             <div className="drawer-section-title">
-              <UserCheck size={15} color="var(--cyan-400)" />
+              <UserCheck size={15} color="#166c52" />
               <span>Operator Persona (RBAC)</span>
             </div>
             <div className="drawer-card">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.6rem' }}>
                 <div>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Active Logged-in Operator:</div>
-                  <strong style={{ fontSize: '0.95rem', color: '#ffffff' }}>{getRoleLongName(activeRole)}</strong>
+                  <div style={{ fontSize: '0.72rem', color: '#789085' }}>Active Logged-in Operator:</div>
+                  <strong style={{ fontSize: '0.95rem', color: '#214239' }}>{getRoleLongName(activeRole)}</strong>
                 </div>
                 <span className="badge badge-reconciled">AUTHENTICATED</span>
               </div>
@@ -1695,7 +1684,7 @@ export default function App(): React.ReactElement {
                   alignItems: 'center',
                   justifyContent: 'center',
                   gap: '0.45rem',
-                  background: 'var(--emerald-500)',
+                  background: '#166c52',
                 }}
                 onClick={() => {
                   setMobileDrawerOpen(false);
@@ -1711,11 +1700,11 @@ export default function App(): React.ReactElement {
           {/* Section 2: Distribution Terminal & Network Mode */}
           <div className="drawer-section">
             <div className="drawer-section-title">
-              <Layers size={15} color="var(--amber-400)" />
+              <Layers size={15} color="#9d6610" />
               <span>Active Terminal Node & Network</span>
             </div>
             <div className="drawer-card">
-              <label style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '0.3rem', display: 'block' }}>
+              <label style={{ fontSize: '0.72rem', color: '#789085', marginBottom: '0.3rem', display: 'block' }}>
                 Assigned Terminal Depot:
               </label>
               <select
@@ -1747,7 +1736,7 @@ export default function App(): React.ReactElement {
           {/* Section 3: Navigation Workspaces */}
           <div className="drawer-section">
             <div className="drawer-section-title">
-              <Activity size={15} color="var(--emerald-400)" />
+              <Activity size={15} color="#166c52" />
               <span>Workspaces & Tabs</span>
             </div>
             <div className="drawer-nav-list">
@@ -1756,7 +1745,7 @@ export default function App(): React.ReactElement {
                 className={`drawer-nav-btn ${activeTab === 'distribution' ? 'active' : ''}`}
                 onClick={() => { setActiveTab('distribution'); setMobileDrawerOpen(false); }}
               >
-                <Activity size={16} />
+                <Activity size={16} color={activeTab === 'distribution' ? '#166c52' : '#789085'} />
                 <span>Grain Dispense Desk</span>
               </button>
               <button
@@ -1764,7 +1753,7 @@ export default function App(): React.ReactElement {
                 className={`drawer-nav-btn ${activeTab === 'registrations' ? 'active' : ''}`}
                 onClick={() => { setActiveTab('registrations'); setMobileDrawerOpen(false); }}
               >
-                <Users size={16} />
+                <Users size={16} color={activeTab === 'registrations' ? '#166c52' : '#789085'} />
                 <span>Beneficiary Cards ({cards.length})</span>
               </button>
               <button
@@ -1772,7 +1761,7 @@ export default function App(): React.ReactElement {
                 className={`drawer-nav-btn ${activeTab === 'edge-sync' ? 'active' : ''}`}
                 onClick={() => { setActiveTab('edge-sync'); setMobileDrawerOpen(false); }}
               >
-                <RefreshCw size={16} />
+                <RefreshCw size={16} color={activeTab === 'edge-sync' ? '#166c52' : '#789085'} />
                 <span>Edge Outbox & Central Sync</span>
               </button>
               <button
@@ -1780,7 +1769,7 @@ export default function App(): React.ReactElement {
                 className={`drawer-nav-btn ${activeTab === 'inventory' ? 'active' : ''}`}
                 onClick={() => { setActiveTab('inventory'); setMobileDrawerOpen(false); }}
               >
-                <Wheat size={16} />
+                <Wheat size={16} color={activeTab === 'inventory' ? '#166c52' : '#789085'} />
                 <span>Grain Stockpile</span>
               </button>
               <button
@@ -1788,7 +1777,7 @@ export default function App(): React.ReactElement {
                 className={`drawer-nav-btn ${activeTab === 'audit-trail' ? 'active' : ''}`}
                 onClick={() => { setActiveTab('audit-trail'); setMobileDrawerOpen(false); }}
               >
-                <FileText size={16} />
+                <FileText size={16} color={activeTab === 'audit-trail' ? '#166c52' : '#789085'} />
                 <span>Audit Log & Verification</span>
               </button>
               <button
@@ -1803,10 +1792,10 @@ export default function App(): React.ReactElement {
                   }
                 }}
                 style={{
-                  color: activeRole === 'ADMINISTRATOR' ? 'var(--rose-400)' : undefined,
+                  color: activeRole === 'ADMINISTRATOR' ? '#b91c1c' : undefined,
                 }}
               >
-                <Monitor size={16} />
+                <Monitor size={16} color={activeRole === 'ADMINISTRATOR' ? '#b91c1c' : '#789085'} />
                 <span>Rural Edge Fleet & Telemetry {activeRole !== 'ADMINISTRATOR' ? '🔒' : ''}</span>
               </button>
             </div>
@@ -1815,15 +1804,15 @@ export default function App(): React.ReactElement {
           {/* Section 4: Security & Encryption Integrity */}
           <div className="drawer-section">
             <div className="drawer-section-title">
-              <Lock size={15} color="var(--emerald-400)" />
+              <Lock size={15} color="#166c52" />
               <span>Storage & Security Level</span>
             </div>
             <div className="drawer-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--emerald-400)', fontWeight: 700, fontSize: '0.82rem' }}>
-                <CheckCircle size={15} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#166c52', fontWeight: 700, fontSize: '0.82rem' }}>
+                <CheckCircle size={15} color="#166c52" />
                 <span>IndexedDB (AES-GCM-256)</span>
               </div>
-              <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+              <div style={{ fontSize: '0.74rem', color: '#789085', lineHeight: 1.4 }}>
                 Citizen PII encrypted on device via WebCrypto SubtleCrypto. Zero-knowledge cryptographic proof generation.
               </div>
             </div>
@@ -1862,10 +1851,29 @@ export default function App(): React.ReactElement {
       <div className="app-shell">
         {/* Desktop Sovereign Command Sidebar */}
         <aside className={`sovereign-sidebar desktop-only ${sidebarCollapsed ? 'collapsed' : ''}`} aria-label="Governance Navigation">
+          {/* Sidebar Top Header & Collapse Toggle */}
+          <div className="sidebar-header-row">
+            {!sidebarCollapsed && (
+              <div className="sidebar-brand-badge">
+                <Shield size={14} color="#166c52" />
+                <span>COMMAND DESK</span>
+              </div>
+            )}
+            <button
+              type="button"
+              className="sidebar-collapse-btn"
+              onClick={toggleSidebar}
+              title={sidebarCollapsed ? "Expand Command Sidebar" : "Collapse Command Sidebar"}
+              aria-label="Toggle Command Sidebar"
+            >
+              {sidebarCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+            </button>
+          </div>
+
           {/* Operational Desks */}
           <div className="sidebar-section">
             <div className="sidebar-section-title">
-              <Activity size={13} color="var(--cyan-400)" />
+              <Activity size={12} color="#166c52" />
               <span>Operational Desks</span>
             </div>
             <div className="sidebar-nav-list">
@@ -1875,7 +1883,7 @@ export default function App(): React.ReactElement {
                 onClick={() => setActiveTab('distribution')}
                 title="Grain Dispense Desk"
               >
-                <Activity size={17} color={activeTab === 'distribution' ? 'var(--cyan-400)' : 'var(--text-muted)'} />
+                <Activity size={16} color={activeTab === 'distribution' ? '#166c52' : '#789085'} />
                 <span className="sidebar-label">Grain Dispense Desk</span>
               </button>
 
@@ -1885,7 +1893,7 @@ export default function App(): React.ReactElement {
                 onClick={() => setActiveTab('registrations')}
                 title="Beneficiary Cards"
               >
-                <Users size={17} color={activeTab === 'registrations' ? 'var(--cyan-400)' : 'var(--text-muted)'} />
+                <Users size={16} color={activeTab === 'registrations' ? '#166c52' : '#789085'} />
                 <span className="sidebar-label">Beneficiary Cards</span>
                 <span className="sidebar-badge">{displayedCards.length}</span>
               </button>
@@ -1896,7 +1904,7 @@ export default function App(): React.ReactElement {
                 onClick={() => setActiveTab('edge-sync')}
                 title="Edge Outbox & Central Sync"
               >
-                <RefreshCw size={17} color={activeTab === 'edge-sync' ? 'var(--cyan-400)' : 'var(--text-muted)'} />
+                <RefreshCw size={16} color={activeTab === 'edge-sync' ? '#166c52' : '#789085'} />
                 <span className="sidebar-label">Edge Outbox & Sync</span>
                 {outboxPendingCount > 0 ? (
                   <span className="sidebar-badge highlight">{outboxPendingCount}</span>
@@ -1911,7 +1919,7 @@ export default function App(): React.ReactElement {
                 onClick={() => setActiveTab('inventory')}
                 title="Grain Stockpile Reserves"
               >
-                <Wheat size={17} color={activeTab === 'inventory' ? 'var(--cyan-400)' : 'var(--text-muted)'} />
+                <Wheat size={16} color={activeTab === 'inventory' ? '#166c52' : '#789085'} />
                 <span className="sidebar-label">Grain Stockpile</span>
                 <span className="sidebar-badge">{lots.length}</span>
               </button>
@@ -1921,7 +1929,7 @@ export default function App(): React.ReactElement {
           {/* Governance & Audit */}
           <div className="sidebar-section">
             <div className="sidebar-section-title">
-              <ShieldCheck size={13} color="var(--emerald-400)" />
+              <ShieldCheck size={12} color="#166c52" />
               <span>Governance & Audit</span>
             </div>
             <div className="sidebar-nav-list">
@@ -1931,7 +1939,7 @@ export default function App(): React.ReactElement {
                 onClick={() => setActiveTab('audit-trail')}
                 title="Immutable Audit Log"
               >
-                <FileText size={17} color={activeTab === 'audit-trail' ? 'var(--cyan-400)' : 'var(--text-muted)'} />
+                <FileText size={16} color={activeTab === 'audit-trail' ? '#166c52' : '#789085'} />
                 <span className="sidebar-label">Immutable Audit Log</span>
               </button>
 
@@ -1947,21 +1955,21 @@ export default function App(): React.ReactElement {
                 }}
                 title="Rural Edge Fleet & Telemetry"
               >
-                <Monitor size={17} color={activeTab === 'fleet-telemetry' ? 'var(--rose-400)' : 'var(--text-muted)'} />
+                <Monitor size={16} color={activeTab === 'fleet-telemetry' ? '#b91c1c' : '#789085'} />
                 <span className="sidebar-label">Edge Fleet & Logs</span>
-                {activeRole !== 'ADMINISTRATOR' && <Lock size={12} style={{ marginLeft: 'auto', opacity: 0.6 }} />}
+                {activeRole !== 'ADMINISTRATOR' && <Lock size={12} style={{ marginLeft: 'auto', opacity: 0.5 }} />}
               </button>
             </div>
           </div>
 
           {/* Security Footer Card */}
           <div className="sidebar-footer-card">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontSize: '0.72rem', fontWeight: 700, color: 'var(--emerald-400)' }}>
-              <CheckCircle size={14} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontSize: '0.72rem', fontWeight: 700, color: '#166c52' }}>
+              <CheckCircle size={14} color="#166c52" />
               <span>WebCrypto AES-256</span>
             </div>
-            <div style={{ fontSize: '0.68rem', color: 'var(--text-dim)', lineHeight: 1.35 }}>
-              Zero-knowledge local PII encryption active.
+            <div style={{ fontSize: '0.67rem', color: '#789085', lineHeight: 1.35 }}>
+              Zero-knowledge citizen PII encryption active.
             </div>
           </div>
         </aside>
