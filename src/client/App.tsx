@@ -31,6 +31,7 @@ import {
   Radio,
   Eye,
   EyeOff,
+  Shield,
   ShieldCheck,
   Server,
   Filter,
