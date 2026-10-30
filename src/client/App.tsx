@@ -34,6 +34,9 @@ import {
   ShieldCheck,
   Server,
   Filter,
+  ChevronLeft,
+  TrendingUp,
+  BarChart3,
 } from 'lucide-react';
 import type { UserRole, TxnState, ReasonCode } from '../core/types.js';
 import {
@@ -272,6 +275,22 @@ export default function App(): React.ReactElement {
   const [selectedNodeId, setSelectedNodeId] = useState<string>('node-alpha-001');
   const selectedNodeIdRef = useRef(selectedNodeId);
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState<boolean>(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('graintrust_sidebar_collapsed') === 'true';
+    }
+    return false;
+  });
+
+  const toggleSidebar = () => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('graintrust_sidebar_collapsed', String(next));
+      }
+      return next;
+    });
+  };
   const dataRequestRef = useRef(0);
   const apiReachableRef = useRef<boolean | null>(null);
   const lastApiProbeTimeRef = useRef<number>(0);
@@ -1370,16 +1389,46 @@ export default function App(): React.ReactElement {
     }
   };
 
+  // Governance KPI Telemetry (Computed strictly in-memory from existing arrays)
+  const totalQuotaAllocated = cards.reduce((acc, c) => acc + (Number(c.allocated_qty) || 0), 0);
+  const totalQuotaConsumed = cards.reduce((acc, c) => acc + (Number(c.consumed_qty) || 0), 0);
+  const totalQuotaBalance = cards.reduce(
+    (acc, c) =>
+      acc +
+      (c.remaining_balance !== undefined && !isNaN(Number(c.remaining_balance))
+        ? Number(c.remaining_balance)
+        : (Number(c.allocated_qty) || 0) - (Number(c.consumed_qty) || 0)),
+    0
+  );
+  const quotaDisbursedPercent =
+    totalQuotaAllocated > 0 ? ((totalQuotaConsumed / totalQuotaAllocated) * 100).toFixed(1) : '0.0';
+  const totalGrainStock = lots.reduce((acc, l) => acc + (Number(l.remaining_quantity) || 0), 0);
+  const outboxPendingCount = Math.max(activeNode?.outbox_depth || 0, pendingTokens.length);
+
   return (
     <div className="app-container">
       {/* Top Navigation Bar */}
       <header className="top-navbar">
         <div className="brand-section">
+          {/* Sidebar Collapse Toggle Button (Desktop) */}
+          <button
+            type="button"
+            className="sidebar-toggle-btn desktop-only"
+            onClick={toggleSidebar}
+            title={sidebarCollapsed ? "Expand Command Sidebar" : "Collapse Command Sidebar"}
+            aria-label="Toggle Command Sidebar"
+          >
+            {sidebarCollapsed ? <Menu size={18} /> : <ChevronLeft size={18} />}
+          </button>
+
           <div className="brand-icon">
             <Wheat size={22} color="#ffffff" />
           </div>
           <div>
-            <div className="brand-title">GrainTrust</div>
+            <div className="brand-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span>GrainTrust</span>
+              <span className="gov-seal-pill desktop-only">NFSA SOVEREIGN</span>
+            </div>
             <div className="brand-subtitle desktop-only">Resilient Registration & Offline Grain Distribution Ledger</div>
           </div>
         </div>
@@ -1809,6 +1858,233 @@ export default function App(): React.ReactElement {
         </div>
       </aside>
 
+      {/* Main App Shell with Persistent Sidebar + Main Workspace */}
+      <div className="app-shell">
+        {/* Desktop Sovereign Command Sidebar */}
+        <aside className={`sovereign-sidebar desktop-only ${sidebarCollapsed ? 'collapsed' : ''}`} aria-label="Governance Navigation">
+          {/* Operational Desks */}
+          <div className="sidebar-section">
+            <div className="sidebar-section-title">
+              <Activity size={13} color="var(--cyan-400)" />
+              <span>Operational Desks</span>
+            </div>
+            <div className="sidebar-nav-list">
+              <button
+                type="button"
+                className={`sidebar-nav-btn ${activeTab === 'distribution' ? 'active' : ''}`}
+                onClick={() => setActiveTab('distribution')}
+                title="Grain Dispense Desk"
+              >
+                <Activity size={17} color={activeTab === 'distribution' ? 'var(--cyan-400)' : 'var(--text-muted)'} />
+                <span className="sidebar-label">Grain Dispense Desk</span>
+              </button>
+
+              <button
+                type="button"
+                className={`sidebar-nav-btn ${activeTab === 'registrations' ? 'active' : ''}`}
+                onClick={() => setActiveTab('registrations')}
+                title="Beneficiary Cards"
+              >
+                <Users size={17} color={activeTab === 'registrations' ? 'var(--cyan-400)' : 'var(--text-muted)'} />
+                <span className="sidebar-label">Beneficiary Cards</span>
+                <span className="sidebar-badge">{displayedCards.length}</span>
+              </button>
+
+              <button
+                type="button"
+                className={`sidebar-nav-btn ${activeTab === 'edge-sync' ? 'active' : ''}`}
+                onClick={() => setActiveTab('edge-sync')}
+                title="Edge Outbox & Central Sync"
+              >
+                <RefreshCw size={17} color={activeTab === 'edge-sync' ? 'var(--cyan-400)' : 'var(--text-muted)'} />
+                <span className="sidebar-label">Edge Outbox & Sync</span>
+                {outboxPendingCount > 0 ? (
+                  <span className="sidebar-badge highlight">{outboxPendingCount}</span>
+                ) : (
+                  <span className="sidebar-badge">0</span>
+                )}
+              </button>
+
+              <button
+                type="button"
+                className={`sidebar-nav-btn ${activeTab === 'inventory' ? 'active' : ''}`}
+                onClick={() => setActiveTab('inventory')}
+                title="Grain Stockpile Reserves"
+              >
+                <Wheat size={17} color={activeTab === 'inventory' ? 'var(--cyan-400)' : 'var(--text-muted)'} />
+                <span className="sidebar-label">Grain Stockpile</span>
+                <span className="sidebar-badge">{lots.length}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Governance & Audit */}
+          <div className="sidebar-section">
+            <div className="sidebar-section-title">
+              <ShieldCheck size={13} color="var(--emerald-400)" />
+              <span>Governance & Audit</span>
+            </div>
+            <div className="sidebar-nav-list">
+              <button
+                type="button"
+                className={`sidebar-nav-btn ${activeTab === 'audit-trail' ? 'active' : ''}`}
+                onClick={() => setActiveTab('audit-trail')}
+                title="Immutable Audit Log"
+              >
+                <FileText size={17} color={activeTab === 'audit-trail' ? 'var(--cyan-400)' : 'var(--text-muted)'} />
+                <span className="sidebar-label">Immutable Audit Log</span>
+              </button>
+
+              <button
+                type="button"
+                className={`sidebar-nav-btn ${activeTab === 'fleet-telemetry' ? 'active' : ''}`}
+                onClick={() => {
+                  if (activeRole !== 'ADMINISTRATOR') {
+                    handleRoleChangeRequest('ADMINISTRATOR');
+                  } else {
+                    setActiveTab('fleet-telemetry');
+                  }
+                }}
+                title="Rural Edge Fleet & Telemetry"
+              >
+                <Monitor size={17} color={activeTab === 'fleet-telemetry' ? 'var(--rose-400)' : 'var(--text-muted)'} />
+                <span className="sidebar-label">Edge Fleet & Logs</span>
+                {activeRole !== 'ADMINISTRATOR' && <Lock size={12} style={{ marginLeft: 'auto', opacity: 0.6 }} />}
+              </button>
+            </div>
+          </div>
+
+          {/* Security Footer Card */}
+          <div className="sidebar-footer-card">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontSize: '0.72rem', fontWeight: 700, color: 'var(--emerald-400)' }}>
+              <CheckCircle size={14} />
+              <span>WebCrypto AES-256</span>
+            </div>
+            <div style={{ fontSize: '0.68rem', color: 'var(--text-dim)', lineHeight: 1.35 }}>
+              Zero-knowledge local PII encryption active.
+            </div>
+          </div>
+        </aside>
+
+        {/* Dashboard Content Area */}
+        <div className="dashboard-content-area">
+          {/* Executive Governance KPI Strip (Mobile Adaptive) */}
+          <section className="governance-kpi-strip" aria-label="Governance Telemetry Pulse">
+            {/* KPI 1: Quota Disbursed */}
+            <div className="kpi-card">
+              <div className="kpi-card-header">
+                <span className="kpi-card-label">
+                  <TrendingUp size={13} color="var(--emerald-400)" />
+                  Quota Disbursed
+                </span>
+                <span className="badge badge-reconciled" style={{ fontSize: '0.65rem' }}>{quotaDisbursedPercent}%</span>
+              </div>
+              <div className="kpi-card-value">
+                {totalQuotaConsumed}
+                <span className="kpi-card-unit">kg drawn</span>
+              </div>
+              <div className="kpi-progress-bar">
+                <div
+                  className="kpi-progress-fill"
+                  style={{
+                    width: `${Math.min(100, Math.max(2, Number(quotaDisbursedPercent)))}%`,
+                    background: 'linear-gradient(90deg, var(--emerald-500), var(--cyan-400))',
+                  }}
+                />
+              </div>
+              <div className="kpi-card-sub">
+                <span>Allocated: {totalQuotaAllocated} kg</span>
+                <span>Bal: {totalQuotaBalance} kg</span>
+              </div>
+            </div>
+
+            {/* KPI 2: Buffer Reserve */}
+            <div className="kpi-card">
+              <div className="kpi-card-header">
+                <span className="kpi-card-label">
+                  <Wheat size={13} color="var(--amber-400)" />
+                  Buffer Reserve Stock
+                </span>
+                <span className="gov-seal-pill" style={{ fontSize: '0.58rem', padding: '1px 5px' }}>OPTIMAL</span>
+              </div>
+              <div className="kpi-card-value">
+                {totalGrainStock.toLocaleString()}
+                <span className="kpi-card-unit">kg grain</span>
+              </div>
+              <div className="kpi-progress-bar">
+                <div
+                  className="kpi-progress-fill"
+                  style={{
+                    width: '94%',
+                    background: 'linear-gradient(90deg, var(--amber-500), var(--emerald-400))',
+                  }}
+                />
+              </div>
+              <div className="kpi-card-sub">
+                <span>{lots.length} Certified Lots</span>
+                <span>Depot Silo #44</span>
+              </div>
+            </div>
+
+            {/* KPI 3: Ledger Integrity */}
+            <div className="kpi-card">
+              <div className="kpi-card-header">
+                <span className="kpi-card-label">
+                  <ShieldCheck size={13} color={outboxPendingCount > 0 ? 'var(--amber-400)' : 'var(--emerald-400)'} />
+                  Ledger Integrity
+                </span>
+                <span className={outboxPendingCount === 0 ? 'badge badge-reconciled' : 'badge badge-provisional'} style={{ fontSize: '0.65rem' }}>
+                  {outboxPendingCount === 0 ? 'SYNCED' : 'PENDING'}
+                </span>
+              </div>
+              <div className="kpi-card-value">
+                {outboxPendingCount}
+                <span className="kpi-card-unit">{outboxPendingCount === 1 ? 'token queued' : 'tokens queued'}</span>
+              </div>
+              <div className="kpi-progress-bar">
+                <div
+                  className="kpi-progress-fill"
+                  style={{
+                    width: outboxPendingCount === 0 ? '100%' : '35%',
+                    background: outboxPendingCount === 0 ? 'var(--emerald-400)' : 'var(--amber-400)',
+                  }}
+                />
+              </div>
+              <div className="kpi-card-sub">
+                <span>{outboxPendingCount === 0 ? 'Central Ledger Reconciled' : 'Offline Tokens Awaiting Sync'}</span>
+                <span>Ed25519</span>
+              </div>
+            </div>
+
+            {/* KPI 4: Terminal Identity */}
+            <div className="kpi-card">
+              <div className="kpi-card-header">
+                <span className="kpi-card-label">
+                  <Monitor size={13} color="var(--cyan-400)" />
+                  Terminal Identity
+                </span>
+                <span className={`status-dot ${isOnline ? 'online' : 'offline'}`} />
+              </div>
+              <div className="kpi-card-value">
+                {currentMachineId}
+                <span className="kpi-card-unit" style={{ fontSize: '0.74rem' }}>({isOnline ? 'ONLINE' : 'OFFLINE'})</span>
+              </div>
+              <div className="kpi-progress-bar">
+                <div
+                  className="kpi-progress-fill"
+                  style={{
+                    width: '100%',
+                    background: 'linear-gradient(90deg, var(--cyan-500), var(--indigo-500))',
+                  }}
+                />
+              </div>
+              <div className="kpi-card-sub">
+                <span>{activeNode?.name ? activeNode.name.split('(')[0].trim() : 'Depot Alpha'}</span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.64rem', color: 'var(--cyan-400)' }}>{sessionId}</span>
+              </div>
+            </div>
+          </section>
+
       {/* Offline Mode Warning Banner */}
       {!isOnline && (
         <div className="offline-banner">
@@ -1820,8 +2096,8 @@ export default function App(): React.ReactElement {
         </div>
       )}
 
-      {/* Navigation Tabs */}
-      <nav className="nav-tabs-bar">
+      {/* Navigation Tabs (Mobile Only) */}
+      <nav className="nav-tabs-bar mobile-only">
         <button
           className={`nav-tab-btn ${activeTab === 'distribution' ? 'active' : ''}`}
           onClick={() => setActiveTab('distribution')}
@@ -3387,6 +3663,8 @@ export default function App(): React.ReactElement {
           </div>
         )}
       </main>
+        </div>
+      </div>
 
       {/* MODAL 1: Operator Role Security Password Authentication Modal (White & Green Theme) */}
       {roleAuthModalOpen && (

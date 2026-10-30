@@ -1573,4 +1573,402 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
   border-color: rgba(255, 255, 255, 0.3);
 }
 
+/* ==========================================================================
+   Sovereign Governance Command Architecture & Mobile-Adaptive Enhancements
+   ========================================================================== */
+
+/* Institutional Badge */
+.gov-seal-pill {
+  background: rgba(14, 165, 233, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  font-size: 0.62rem;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 9999px;
+  letter-spacing: 0.08em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+/* Sidebar Toggle Button */
+.sidebar-toggle-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-muted);
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  margin-right: 0.4rem;
+}
+
+.sidebar-toggle-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.25);
+  transform: scale(1.04);
+}
+
+/* App Shell Layout */
+.app-shell {
+  display: flex;
+  flex: 1;
+  min-height: calc(100vh - 65px);
+  position: relative;
+  width: 100%;
+}
+
+/* Sovereign Persistent Command Sidebar (Desktop) */
+.sovereign-sidebar {
+  width: 255px;
+  min-width: 255px;
+  background: rgba(10, 14, 23, 0.95);
+  backdrop-filter: blur(20px);
+  border-right: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 65px;
+  height: calc(100vh - 65px);
+  z-index: 30;
+  transition: width 0.24s cubic-bezier(0.16, 1, 0.3, 1), min-width 0.24s cubic-bezier(0.16, 1, 0.3, 1), padding 0.24s ease;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 1.15rem 0.85rem;
+}
+
+.sovereign-sidebar.collapsed {
+  width: 72px;
+  min-width: 72px;
+  padding: 1.15rem 0.5rem;
+}
+
+.sidebar-section {
+  margin-bottom: 1.25rem;
+}
+
+.sidebar-section-title {
+  font-size: 0.68rem;
+  font-weight: 800;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.5rem 0.6rem 0.35rem;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: opacity 0.2s ease;
+}
+
+.sovereign-sidebar.collapsed .sidebar-section-title {
+  opacity: 0;
+  height: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.sidebar-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.sidebar-nav-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.65rem 0.75rem;
+  border-radius: var(--radius-md);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.sovereign-sidebar.collapsed .sidebar-nav-btn {
+  justify-content: center;
+  padding: 0.65rem 0;
+  border-radius: var(--radius-sm);
+}
+
+.sidebar-nav-btn:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.08);
+  transform: translateX(2px);
+}
+
+.sovereign-sidebar.collapsed .sidebar-nav-btn:hover {
+  transform: none;
+}
+
+.sidebar-nav-btn.active {
+  color: #ffffff;
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0.15), rgba(16, 185, 129, 0.08));
+  border-color: rgba(56, 189, 248, 0.3);
+  box-shadow: 0 0 15px rgba(56, 189, 248, 0.1);
+}
+
+.sidebar-nav-btn.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 15%;
+  height: 70%;
+  width: 3px;
+  background: var(--cyan-400);
+  border-radius: 0 4px 4px 0;
+}
+
+.sovereign-sidebar.collapsed .sidebar-nav-btn.active::before {
+  left: 2px;
+}
+
+.sidebar-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: opacity 0.2s ease;
+}
+
+.sovereign-sidebar.collapsed .sidebar-label {
+  display: none;
+}
+
+.sidebar-badge {
+  margin-left: auto;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+}
+
+.sidebar-badge.highlight {
+  background: rgba(245, 158, 11, 0.2);
+  color: var(--amber-400);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  animation: pulse 2s infinite ease-in-out;
+}
+
+.sovereign-sidebar.collapsed .sidebar-badge {
+  display: none;
+}
+
+/* Sidebar Hardware Info Footer */
+.sidebar-footer-card {
+  margin-top: auto;
+  padding: 0.75rem;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.sovereign-sidebar.collapsed .sidebar-footer-card {
+  display: none;
+}
+
+/* Dashboard Content Area */
+.dashboard-content-area {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+/* Executive Governance KPI Strip (Mobile Adaptive) */
+.governance-kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+  padding: 1.25rem 1.75rem 0.5rem;
+  max-width: 1440px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.kpi-card {
+  background: rgba(15, 23, 42, 0.7);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-md);
+  padding: 0.95rem 1.15rem;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.kpi-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(56, 189, 248, 0.3);
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);
+}
+
+.kpi-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.4rem;
+}
+
+.kpi-card-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.kpi-card-value {
+  font-size: 1.45rem;
+  font-weight: 800;
+  color: #ffffff;
+  font-feature-settings: "tnum";
+  letter-spacing: -0.02em;
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+}
+
+.kpi-card-unit {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.kpi-card-sub {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 0.35rem;
+}
+
+.kpi-progress-bar {
+  width: 100%;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 9999px;
+  overflow: hidden;
+  margin-top: 0.5rem;
+}
+
+.kpi-progress-fill {
+  height: 100%;
+  border-radius: 9999px;
+  transition: width 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Stepper Animation Enhancements */
+.pipeline-step.active .step-node {
+  animation: pulse-ring 1.8s infinite cubic-bezier(0.4, 0, 0.6, 1);
+}
+
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.6), 0 0 15px rgba(56, 189, 248, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(56, 189, 248, 0), 0 0 20px rgba(56, 189, 248, 0.2);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(56, 189, 248, 0), 0 0 15px rgba(56, 189, 248, 0);
+  }
+}
+
+.step-node.active-RECONCILED {
+  border-color: var(--emerald-400);
+  background: rgba(16, 185, 129, 0.25);
+  color: #ffffff;
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.5);
+  animation: reconciled-glow 2s infinite alternate ease-in-out;
+}
+
+@keyframes reconciled-glow {
+  0% { box-shadow: 0 0 12px rgba(16, 185, 129, 0.4); }
+  100% { box-shadow: 0 0 24px rgba(16, 185, 129, 0.7); }
+}
+
+/* Tabular Number Alignment */
+.metric-value, .kpi-card-value, .hero-balance-val, .hero-stat-val, td, th {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Responsive Breakpoints & Mobile Adaptability */
+@media (min-width: 1025px) {
+  .desktop-only {
+    display: flex !important;
+  }
+  .mobile-only {
+    display: none !important;
+  }
+}
+
+@media (max-width: 1024px) {
+  .desktop-only {
+    display: none !important;
+  }
+  .mobile-only {
+    display: flex !important;
+  }
+  .sovereign-sidebar {
+    display: none !important;
+  }
+  .governance-kpi-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: 0.85rem 1rem 0.25rem;
+    gap: 0.75rem;
+  }
+  .main-view {
+    padding: 1rem;
+  }
+}
+
+@media (max-width: 640px) {
+  .governance-kpi-strip {
+    grid-template-columns: 1fr;
+    padding: 0.65rem 0.75rem 0.25rem;
+    gap: 0.6rem;
+  }
+  .kpi-card {
+    padding: 0.75rem 0.95rem;
+  }
+  .kpi-card-value {
+    font-size: 1.25rem;
+  }
+  .main-view {
+    padding: 0.65rem;
+  }
+  .top-navbar {
+    padding: 0.65rem 0.85rem;
+  }
+}
+
+
 
