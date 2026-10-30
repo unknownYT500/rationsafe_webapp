@@ -1415,10 +1415,10 @@ export default function App(): React.ReactElement {
             <Wheat size={22} color="#ffffff" />
           </div>
           <div>
-            <div className="brand-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <h1 className="brand-title" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0, fontSize: 'inherit', fontWeight: 'inherit', lineHeight: 'inherit' }}>
               <span>GrainTrust</span>
               <span className="gov-seal-pill desktop-only">NFSA SOVEREIGN</span>
-            </div>
+            </h1>
             <div className="brand-subtitle desktop-only">Resilient Registration & Offline Grain Distribution Ledger</div>
           </div>
         </div>
@@ -1507,8 +1507,10 @@ export default function App(): React.ReactElement {
 
           {/* Active Terminal Node */}
           <div className="role-selector">
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Terminal:</span>
+            <label htmlFor="header-terminal-select" style={{ fontSize: '0.75rem', color: 'var(--text-muted)', cursor: 'pointer' }}>Terminal:</label>
             <select
+              id="header-terminal-select"
+              aria-label="Select Assigned Distribution Terminal Depot"
               value={selectedNodeId || 'node-alpha-001'}
               onChange={(e) => handleNodeChange(e.target.value)}
               style={{ minWidth: '180px', cursor: 'pointer' }}
@@ -1636,7 +1638,11 @@ export default function App(): React.ReactElement {
         />
       )}
 
-      <aside className={`mobile-drawer ${mobileDrawerOpen ? 'open' : ''}`} aria-hidden={!mobileDrawerOpen}>
+      <aside
+        className={`mobile-drawer ${mobileDrawerOpen ? 'open' : ''}`}
+        aria-hidden={!mobileDrawerOpen}
+        inert={!mobileDrawerOpen ? true : undefined}
+      >
         <div className="mobile-drawer-header">
           <div className="mobile-drawer-title">
             <Sliders size={18} color="#166c52" />
@@ -1705,10 +1711,12 @@ export default function App(): React.ReactElement {
               <span>Active Terminal Node & Network</span>
             </div>
             <div className="drawer-card">
-              <label style={{ fontSize: '0.72rem', color: '#789085', marginBottom: '0.3rem', display: 'block' }}>
+              <label htmlFor="drawer-terminal-depot-select" style={{ fontSize: '0.72rem', color: '#354a40', marginBottom: '0.3rem', display: 'block', cursor: 'pointer' }}>
                 Assigned Terminal Depot:
               </label>
               <select
+                id="drawer-terminal-depot-select"
+                aria-label="Select Assigned Distribution Terminal Depot"
                 className="drawer-select"
                 value={selectedNodeId || 'node-alpha-001'}
                 onChange={(e) => handleNodeChange(e.target.value)}
@@ -2263,8 +2271,10 @@ export default function App(): React.ReactElement {
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <Filter size={14} color="var(--text-muted)" />
-                  <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>Filter Machine:</span>
+                  <label htmlFor="admin-machine-filter-select" style={{ fontSize: '0.74rem', color: 'var(--text-muted)', cursor: 'pointer' }}>Filter Machine:</label>
                   <select
+                    id="admin-machine-filter-select"
+                    aria-label="Filter cards by edge machine"
                     value={selectedMachineFilter}
                     onChange={(e) => setSelectedMachineFilter(e.target.value)}
                     style={{
@@ -2383,8 +2393,10 @@ export default function App(): React.ReactElement {
                     }}
                   >
                     <CreditCard size={15} color="var(--cyan-400)" />
-                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Switch Card:</span>
+                    <label htmlFor="hero-beneficiary-card-select" style={{ fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', cursor: 'pointer' }}>Switch Card:</label>
                     <select
+                      id="hero-beneficiary-card-select"
+                      aria-label="Switch Active Beneficiary Card for Dispense"
                       className="hero-card-select"
                       value={selectedCardId || (displayedCards[0]?.id ?? cards[0]?.id ?? '')}
                       onChange={(e) => {
@@ -2536,8 +2548,14 @@ export default function App(): React.ReactElement {
 
               <div className="grid-3" style={{ marginTop: '1.5rem' }}>
                 <div className="form-group">
-                  <label className="form-label">Grain Commodity Lot</label>
-                  <select className="form-select" value={distLotId} onChange={(e) => setDistLotId(e.target.value)}>
+                  <label className="form-label" htmlFor="dispense-lot-select">Grain Commodity Lot</label>
+                  <select
+                    id="dispense-lot-select"
+                    aria-label="Grain Commodity Lot"
+                    className="form-select"
+                    value={distLotId}
+                    onChange={(e) => setDistLotId(e.target.value)}
+                  >
                     {lots.map((l) => (
                       <option key={l.id} value={l.id}>
                         {l.name} ({l.grain_type}) — Available: {l.remaining_quantity}kg
@@ -2547,8 +2565,10 @@ export default function App(): React.ReactElement {
                 </div>
 
                 <div className="form-group">
-                  <label className="form-label">Ration Quantity to Dispense (kg)</label>
+                  <label className="form-label" htmlFor="dispense-qty-input">Ration Quantity to Dispense (kg)</label>
                   <input
+                    id="dispense-qty-input"
+                    aria-label="Ration Quantity to Dispense in kilograms"
                     type="number"
                     step="0.5"
                     min="0.5"
@@ -2728,8 +2748,10 @@ export default function App(): React.ReactElement {
               <form onSubmit={handleSubmitRegistration}>
                 <div className="form-row-2">
                   <div className="form-group">
-                    <label className="form-label">First Name</label>
+                    <label className="form-label" htmlFor="reg-first-name-input">First Name</label>
                     <input
+                      id="reg-first-name-input"
+                      aria-label="Beneficiary First Name"
                       type="text"
                       className="form-input"
                       required
@@ -2738,8 +2760,10 @@ export default function App(): React.ReactElement {
                     />
                   </div>
                   <div className="form-group">
-                    <label className="form-label">Last Name</label>
+                    <label className="form-label" htmlFor="reg-last-name-input">Last Name</label>
                     <input
+                      id="reg-last-name-input"
+                      aria-label="Beneficiary Last Name"
                       type="text"
                       className="form-input"
                       required
@@ -2751,8 +2775,10 @@ export default function App(): React.ReactElement {
 
                 <div className="form-row-2">
                   <div className="form-group">
-                    <label className="form-label">Phone Number (+91...)</label>
+                    <label className="form-label" htmlFor="reg-phone-input">Phone Number (+91...)</label>
                     <input
+                      id="reg-phone-input"
+                      aria-label="Beneficiary Phone Number"
                       type="text"
                       className="form-input"
                       required
@@ -2761,8 +2787,10 @@ export default function App(): React.ReactElement {
                     />
                   </div>
                   <div className="form-group">
-                    <label className="form-label">Date of Birth</label>
+                    <label className="form-label" htmlFor="reg-dob-input">Date of Birth</label>
                     <input
+                      id="reg-dob-input"
+                      aria-label="Beneficiary Date of Birth"
                       type="date"
                       className="form-input"
                       required
@@ -2774,8 +2802,10 @@ export default function App(): React.ReactElement {
 
                 <div className="form-row-2">
                   <div className="form-group">
-                    <label className="form-label">Family Size (10kg / member)</label>
+                    <label className="form-label" htmlFor="reg-family-count-input">Family Size (10kg / member)</label>
                     <input
+                      id="reg-family-count-input"
+                      aria-label="Family Member Count"
                       type="number"
                       min="1"
                       max="20"
@@ -2785,8 +2815,10 @@ export default function App(): React.ReactElement {
                     />
                   </div>
                   <div className="form-group">
-                    <label className="form-label">Annual Income (₹)</label>
+                    <label className="form-label" htmlFor="reg-income-input">Annual Income (₹)</label>
                     <input
+                      id="reg-income-input"
+                      aria-label="Annual Household Income in Rupees"
                       type="number"
                       min="0"
                       className="form-input"
@@ -2797,8 +2829,10 @@ export default function App(): React.ReactElement {
                 </div>
 
                 <div className="form-group">
-                  <label className="form-label">Address</label>
+                  <label className="form-label" htmlFor="reg-address-input">Address</label>
                   <input
+                    id="reg-address-input"
+                    aria-label="Street Address"
                     type="text"
                     className="form-input"
                     required
@@ -2809,8 +2843,10 @@ export default function App(): React.ReactElement {
 
                 <div className="form-row-2">
                   <div className="form-group">
-                    <label className="form-label">City</label>
+                    <label className="form-label" htmlFor="reg-city-input">City</label>
                     <input
+                      id="reg-city-input"
+                      aria-label="City"
                       type="text"
                       className="form-input"
                       required
@@ -2819,8 +2855,10 @@ export default function App(): React.ReactElement {
                     />
                   </div>
                   <div className="form-group">
-                    <label className="form-label">State</label>
+                    <label className="form-label" htmlFor="reg-state-input">State</label>
                     <input
+                      id="reg-state-input"
+                      aria-label="State"
                       type="text"
                       className="form-input"
                       required
@@ -3473,8 +3511,10 @@ export default function App(): React.ReactElement {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.75rem' }}>
                         <Filter size={13} color="var(--text-muted)" />
-                        <span style={{ color: 'var(--text-muted)' }}>Terminal:</span>
+                        <label htmlFor="audit-terminal-filter-select" style={{ color: 'var(--text-muted)', cursor: 'pointer' }}>Terminal:</label>
                         <select
+                          id="audit-terminal-filter-select"
+                          aria-label="Filter audit logs by terminal machine"
                           value={selectedMachineFilter}
                           onChange={(e) => setSelectedMachineFilter(e.target.value)}
                           style={{
@@ -3496,8 +3536,10 @@ export default function App(): React.ReactElement {
                       </div>
 
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.75rem' }}>
-                        <span style={{ color: 'var(--text-muted)' }}>Event Type:</span>
+                        <label htmlFor="audit-event-type-filter-select" style={{ color: 'var(--text-muted)', cursor: 'pointer' }}>Event Type:</label>
                         <select
+                          id="audit-event-type-filter-select"
+                          aria-label="Filter audit logs by event type"
                           value={selectedLogTypeFilter}
                           onChange={(e) => setSelectedLogTypeFilter(e.target.value)}
                           style={{
@@ -3792,17 +3834,21 @@ export default function App(): React.ReactElement {
                 {/* Target Role Selector */}
                 <div style={{ marginBottom: '1.15rem' }}>
                   <label
+                    htmlFor="target-role-persona-select"
                     style={{
                       display: 'block',
                       fontSize: '0.82rem',
                       fontWeight: 700,
                       color: '#1e293b',
                       marginBottom: '0.45rem',
+                      cursor: 'pointer',
                     }}
                   >
                     Target Role Persona
                   </label>
                   <select
+                    id="target-role-persona-select"
+                    aria-label="Target Role Persona"
                     value={pendingTargetRole}
                     onChange={(e) => setPendingTargetRole(e.target.value as UserRole)}
                     style={{
@@ -3834,17 +3880,21 @@ export default function App(): React.ReactElement {
                 {/* Password Input */}
                 <div style={{ marginBottom: '1.5rem' }}>
                   <label
+                    htmlFor="role-security-password-input"
                     style={{
                       display: 'block',
                       fontSize: '0.82rem',
                       fontWeight: 700,
                       color: '#1e293b',
                       marginBottom: '0.45rem',
+                      cursor: 'pointer',
                     }}
                   >
                     Security Password
                   </label>
                   <input
+                    id="role-security-password-input"
+                    aria-label="Security Password"
                     type="password"
                     style={{
                       width: '100%',
@@ -4330,17 +4380,21 @@ export default function App(): React.ReactElement {
               <form onSubmit={handleUpdateAdminPassword}>
                 <div style={{ marginBottom: '1.5rem' }}>
                   <label
+                    htmlFor="new-admin-master-password-input"
                     style={{
                       display: 'block',
                       fontSize: '0.82rem',
                       fontWeight: 700,
                       color: '#1e293b',
                       marginBottom: '0.45rem',
+                      cursor: 'pointer',
                     }}
                   >
                     New Master Password
                   </label>
                   <input
+                    id="new-admin-master-password-input"
+                    aria-label="New Master Password"
                     type="password"
                     style={{
                       width: '100%',

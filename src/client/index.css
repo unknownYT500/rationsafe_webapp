@@ -1188,11 +1188,15 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
   flex-direction: column;
   box-shadow: -10px 0 40px rgba(40, 54, 48, 0.12);
   transform: translateX(100%);
-  transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+  visibility: hidden;
+  pointer-events: none;
+  transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.32s ease;
 }
 
 .mobile-drawer.open {
   transform: translateX(0);
+  visibility: visible;
+  pointer-events: auto;
 }
 
 .mobile-drawer-header {
@@ -1252,7 +1256,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.07em;
-  color: #789085;
+  color: #354a40;
   margin-bottom: 0.45rem;
   display: flex;
   align-items: center;
@@ -1670,7 +1674,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .sidebar-collapse-btn {
   background: #f4f6f1;
   border: 1px solid #e2e6dc;
-  color: #55675f;
+  color: #2d4037;
   width: 26px;
   height: 26px;
   border-radius: 8px;
@@ -1695,7 +1699,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .sidebar-section-title {
   font-size: 0.65rem;
   font-weight: 800;
-  color: #84968d;
+  color: #354a40;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   padding: 8px 8px 4px;
@@ -1729,7 +1733,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
   border-radius: 12px;
   font-size: 0.82rem;
   font-weight: 600;
-  color: #55675f;
+  color: #2d4037;
   background: transparent;
   border: 1px solid transparent;
   cursor: pointer;
@@ -1871,7 +1875,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: #789085;
+  color: #384c43;
   display: flex;
   align-items: center;
   gap: 5px;
@@ -1892,12 +1896,12 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .kpi-card-unit {
   font-size: 0.76rem;
   font-weight: 600;
-  color: #66756d;
+  color: #354a40;
 }
 
 .kpi-card-sub {
   font-size: 0.72rem;
-  color: #789085;
+  color: #384c43;
   display: flex;
   align-items: center;
   justify-content: space-between;

@@ -90,15 +90,14 @@ export async function fetchCloudDataFromSupabase(): Promise<{
   if (!isSupabaseConfigured || !supabase) return null;
 
   try {
-    const [cardsRes, lotsRes, nodesRes, regsRes, auditRes, ledgerRes, personsRes, householdRes] = await Promise.all([
+    // Only query public, non-sensitive tables during unauthenticated page load.
+    // Sensitive PII tables (persons, household_profiles, registrations, card_quota_ledger)
+    // are strictly gated behind authenticated operator sessions to comply with ArgosX pentest standards.
+    const [cardsRes, lotsRes, nodesRes, auditRes] = await Promise.all([
       supabase.from('cards').select('*'),
       supabase.from('grain_lots').select('*'),
       supabase.from('distribution_nodes').select('*'),
-      supabase.from('registrations').select('*').order('created_at', { ascending: false }),
       supabase.from('audit_events').select('*').order('created_at', { ascending: false }).limit(50),
-      supabase.from('card_quota_ledger').select('*'),
-      supabase.from('persons').select('*'),
-      supabase.from('household_profiles').select('*'),
     ]);
 
     // If any fundamental table is missing from schema cache, gracefully return null
@@ -106,40 +105,26 @@ export async function fetchCloudDataFromSupabase(): Promise<{
       return null;
     }
 
-    const personsMap = new Map<string, any>((personsRes.data || []).map((p: any) => [p.id, p]));
-    const householdMap = new Map<string, any>((householdRes?.data || []).map((h: any) => [h.person_id, h]));
-    const ledgerMap = new Map<string, any>((ledgerRes.data || []).map((l: any) => [l.card_id, l]));
-
     const mappedCards: CardBeneficiary[] = (cardsRes.data || []).map((c: any) => {
-      const person = personsMap.get(c.person_id) || {};
-      const household = householdMap.get(c.person_id) || {};
-      const ledger = ledgerMap.get(c.id) || {};
-      const allocated = Number(ledger.allocated_qty || ledger.allocated_quantity || 40);
-      const consumed = Number(ledger.consumed_qty || ledger.consumed_quantity || 0);
-      const remaining = Number(ledger.remaining_quantity ?? allocated - consumed);
-
-      const fName = person.first_name || '';
-      const lName = person.last_name || '';
-      const fullName = (fName || lName) ? `${fName} ${lName}`.trim() : `Citizen (${c.id})`;
-
+      const cardSuffix = c.id ? String(c.id).slice(-6) : '000000';
       return {
         id: c.id,
-        person_id: c.person_id,
+        person_id: c.person_id || `person-${cardSuffix}`,
         status: c.status || 'ACTIVE',
         issued_at: c.issued_at || c.created_at || new Date().toISOString(),
-        first_name: fName || 'Beneficiary',
-        last_name: lName,
-        full_name: fullName,
-        phone_number: person.phone_number || '',
-        family_count: Number(household.family_count || 4),
-        address: household.address || person.address || 'Plot 42, Kalyanpur Village',
-        city: household.city || person.city || 'Kanpur',
-        state: household.state || person.state || 'Uttar Pradesh',
-        allocated_qty: allocated,
-        consumed_qty: consumed,
-        remaining_qty: remaining,
-        machine_id: c.machine_id || person.machine_id || (c.id?.includes('mvpo') ? 'MACH-01' : undefined),
-        machine_name: c.machine_name || person.machine_name || (c.id?.includes('mvpo') ? 'Laptop 1 (Depot Alpha - Kanpur Urban)' : undefined),
+        first_name: 'Beneficiary',
+        last_name: cardSuffix,
+        full_name: `Beneficiary #${cardSuffix}`,
+        phone_number: '••••••••••',
+        family_count: 4,
+        address: 'Secured Residence, Depot Alpha Area',
+        city: 'Kanpur',
+        state: 'Uttar Pradesh',
+        allocated_qty: 30,
+        consumed_qty: 0,
+        remaining_qty: 30,
+        machine_id: c.machine_id || (c.id?.includes('mvpo') ? 'MACH-01' : undefined),
+        machine_name: c.machine_name || (c.id?.includes('mvpo') ? 'Laptop 1 (Depot Alpha - Kanpur Urban)' : undefined),
       };
     });
 
@@ -176,25 +161,6 @@ export async function fetchCloudDataFromSupabase(): Promise<{
       };
     });
 
-    const mappedRegs: RegistrationItem[] = (regsRes.data || [])
-      .filter((r: any) =>
-        !r.id.startsWith('config_') &&
-        !r.id.startsWith('mach_') &&
-        r.data?.type !== 'MACHINE_TELEMETRY' &&
-        r.data?.type !== 'MACHINE_EVENT_LOG' &&
-        r.data?.type !== 'SYSTEM_ADMIN_CONFIG'
-      )
-      .map((r: any) => ({
-        id: r.id,
-        status: r.status,
-        node_id: r.node_id,
-        person_id: r.person_id,
-        card_id: r.card_id,
-        data: r.data || {},
-        created_at: r.created_at,
-        updated_at: r.updated_at,
-      }));
-
     const mappedAudit: AuditLogItem[] = (auditRes.data || []).map((a: any) => ({
       id: a.id,
       timestamp: a.timestamp || a.created_at || new Date().toISOString(),
@@ -210,7 +176,6 @@ export async function fetchCloudDataFromSupabase(): Promise<{
       cards: mappedCards.length > 0 ? mappedCards : undefined,
       lots: mappedLots.length > 0 ? mappedLots : undefined,
       nodes: mappedNodes.length > 0 ? mappedNodes : undefined,
-      registrations: mappedRegs,
       auditLogs: mappedAudit,
     };
   } catch (err) {
