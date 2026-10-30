@@ -1,0 +1,2 @@
+# Strix Domain Verification File
+# Replace this line with the exact verification token string provided in the Strix dashboard

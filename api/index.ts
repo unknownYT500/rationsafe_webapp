@@ -1,5 +1,7 @@
 // api/index.ts
 // Vercel Serverless Function entry point
+import fs from 'node:fs';
+import path from 'node:path';
 import { createServer } from '../src/api/server.js';
 
 let expressApp: any = null;
@@ -28,9 +30,27 @@ export default function handler(req: any, res: any) {
     return res.end();
   }
 
-  // 1. Health check instant handler
+  // 1. Health check & Security Verification handlers
   const rawUrl = req.url || '';
   const urlPath = rawUrl.split('?')[0];
+
+  if (urlPath === '/.well-known/strix-verify.txt' || urlPath === '/strix-verify.txt') {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    let token = process.env.STRIX_VERIFY_TOKEN;
+    if (!token) {
+      try {
+        const verifyFile = path.join(process.cwd(), 'public', '.well-known', 'strix-verify.txt');
+        if (fs.existsSync(verifyFile)) {
+          token = fs.readFileSync(verifyFile, 'utf8');
+        }
+      } catch {
+        // Fallback
+      }
+    }
+    res.statusCode = 200;
+    return res.end(token || '');
+  }
 
   if (urlPath === '/api/health' || urlPath === '/health') {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
