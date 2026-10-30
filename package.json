@@ -8,6 +8,7 @@
     "test": "npx tsx src/tests/system.test.ts",
     "test:security": "npx tsx src/tests/security-auth.test.ts",
     "test:supabase": "npx tsx src/tests/supabase-check.ts",
+    "test:pentest": "npx tsx src/tests/pentest-argosx.test.ts",
     "start:api": "npx tsx src/api/server.ts",
     "dev": "vite",
     "build": "vite build",
