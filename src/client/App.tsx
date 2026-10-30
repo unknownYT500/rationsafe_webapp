@@ -174,12 +174,19 @@ function getFailureDiagnostic(code: string | undefined, message: string | undefi
   }
 }
 
-let currentAuthToken = '';
+let currentAuthToken = typeof window !== 'undefined' ? (localStorage.getItem('graintrust_auth_token') || '') : '';
 let currentActiveRole: UserRole = 'DISTRIBUTION_OPERATOR';
 const DATA_REFRESH_INTERVAL_MS = 15000;
 
 export function setClientAuthToken(token: string) {
   currentAuthToken = token;
+  if (typeof window !== 'undefined') {
+    if (token) {
+      localStorage.setItem('graintrust_auth_token', token);
+    } else {
+      localStorage.removeItem('graintrust_auth_token');
+    }
+  }
 }
 
 async function safeFetchJson<T = any>(
@@ -776,6 +783,26 @@ export default function App(): React.ReactElement {
         if (typeof window !== 'undefined') {
           localStorage.setItem('graintrust_active_role', pendingTargetRole);
         }
+
+        // Authenticate with server to establish cryptographic JWT session
+        try {
+          const authRes = await safeFetchJson<{ success: boolean; token: string }>('/api/v1/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              username: pendingTargetRole.toLowerCase(),
+              password: rolePasswordInput,
+              role: pendingTargetRole,
+              node_id: selectedNodeId,
+            }),
+          });
+          if (authRes.ok && authRes.data?.token) {
+            setClientAuthToken(authRes.data.token);
+          }
+        } catch {
+          // Fallback to offline autonomous tokenless operation
+        }
+
         setRoleAuthModalOpen(false);
         setRolePasswordInput('');
 
