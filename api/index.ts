@@ -48,8 +48,11 @@ export default function handler(req: any, res: any) {
         // Fallback
       }
     }
+    if (!token) {
+      token = 'strix-verify-86cb7fcbcd657fb473548434d83e87e0';
+    }
     res.statusCode = 200;
-    return res.end(token || '');
+    return res.end(token.trim());
   }
 
   if (urlPath === '/api/health' || urlPath === '/health') {
